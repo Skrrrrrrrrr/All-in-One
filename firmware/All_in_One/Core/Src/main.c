@@ -21,7 +21,7 @@
 #include "cmsis_os.h"
 #include "can.h"
 #include "dma.h"
-#include "eth.h"
+#include "lwip.h"
 #include "spi.h"
 #include "usart.h"
 #include "usb_otg.h"
@@ -100,12 +100,12 @@ int main(void)
   MX_SPI3_Init();
   MX_USART6_UART_Init();
   MX_USB_OTG_FS_USB_Init();
-  MX_ETH_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
 
-  /* Call init function for freertos objects (in freertos.c) */
+  /* Init scheduler */
+  osKernelInitialize();  /* Call init function for freertos objects (in freertos.c) */
   MX_FREERTOS_Init();
 
   /* Start scheduler */
