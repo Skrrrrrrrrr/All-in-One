@@ -1,0 +1,71 @@
+# Prerequisites
+*.d
+
+# Build artifacts
+Debug/
+Release/
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+
+# IDE and project specific
+.settings/
+.metadata/
+*.launch
+*.bak
+
+# CubeMX generated
+*.mxproject
+Drivers/
+Middlewares/
+
+# Optional: TouchGFX specific (if used)
+# TouchGFX/build/
+# TouchGFX/config/*
+# TouchGFX/generated/user.config
+# TouchGFX/*_backup.touchgfx
+# TouchGFX/screenshots/
+# TouchGFX/generated/fonts/cache/
+# TouchGFX/generated/texts/cache/
+
+# ===== Altium Designer 20 (PCBA) =====
+
+# 1. 本地历史记录与缓存（体积巨大，必忽略）
+History/
+Project Logs/
+__Previews/
+.PCBDocUserPreferences
+
+# 2. 自动生成的临时/备份压缩包
+*.PcbDoc.Zip
+*.SchDoc.Zip
+*.PrjPcb.Zip
+*.SchLib.Zip
+*.PcbLib.Zip
+
+# 3. 项目结构缓存文件
+*.PrjPcbStructure
+*.SchDocPreview
+*.PcbDocPreview
+
+# 4. 用户个性化设置（不同电脑不同，不要同步）
+*.User
+*.DsnWrk          # 工作区布局文件（个人偏好）
+*.annotation      # 标注信息
+
+# 5. 输出文件夹（Gerber、钻孔文件、PDF等——请放心的忽略！）
+Outputs/
+Project Outputs/
+Gerber/
+*.Gerber
+*.Drill
+*.NC
+*.RUL
+*.DRI
+
+# 6. 版本升级遗留的临时文件（AD20特有的垃圾）
+*.$$$             # AD的临时交换文件
+*.___
