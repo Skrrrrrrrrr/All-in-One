@@ -70,6 +70,10 @@
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include"/>
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2"/>
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/All_in_One/Middlewares/Third_Party/lettershell/demo/stm32-freertos}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/All_in_One/Middlewares/Third_Party/lettershell/src}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/All_in_One/Middlewares/Third_Party/lettershell/extensions/log}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/All_in_One/Drivers/BSP/Led}&quot;"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.233080" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>

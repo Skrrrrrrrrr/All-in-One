@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "stm32f1xx_hal.h" // 根据实际芯片修改
+#include "stm32f4xx_hal.h" // 根据实际芯片修改
 
 #include "led_driver.h"
 
@@ -27,10 +27,10 @@ typedef struct {
 
 // 常用LED引脚定义（根据实际硬件修改）
 #ifndef LED_STATUS_PORT
-#define LED_STATUS_PORT        LED2_GPIO_Port
+#define LED_STATUS_PORT        LED_GPIO_Port
 #endif
 #ifndef LED_STATUS_PIN
-#define LED_STATUS_PIN         LED2_Pin
+#define LED_STATUS_PIN         LED_Pin
 #endif
 
 #define SYS_STATUS_LED_SN 0

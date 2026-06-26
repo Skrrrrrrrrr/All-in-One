@@ -22,7 +22,7 @@
 const led_pin_config_t led_pin_configs[LED_PIN_TABLE_SIZE] = {
     // 索引0: 状态指示灯
     {
-        .port = LED2_GPIO_Port,
+        .port = LED_STATUS_PORT,
         .pin = LED_STATUS_PIN,
         .description = "状态指示灯"
     },

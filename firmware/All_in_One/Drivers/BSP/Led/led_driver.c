@@ -566,7 +566,7 @@ static void led_ws2812_update(const led_config_t* config, led_status_t* status) 
     }
 } 
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "cmsis_os.h"
 
 /**

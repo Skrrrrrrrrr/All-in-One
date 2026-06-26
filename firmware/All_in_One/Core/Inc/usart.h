@@ -29,19 +29,22 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <stdarg.h>
 /* USER CODE END Includes */
 
 extern UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN Private defines */
-
+#define USART_BUFF_SIZE 64
+extern uint8_t usart_rx_over;
+extern uint8_t rx_buff[USART_BUFF_SIZE];
 /* USER CODE END Private defines */
 
 void MX_USART6_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-
+int USART1_Printf(const char *format, ...);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus
