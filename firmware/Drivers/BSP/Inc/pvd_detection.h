@@ -24,7 +24,6 @@ extern "C" {
 extern volatile uint8_t g_power_failure;
 
 extern volatile uint8_t g_pvd_trigger_count;
-extern volatile uint8_t g_pvd_last_retry;
 extern volatile uint32_t g_pvd_trigger_timestamp;
 
 void pvd_init(void);

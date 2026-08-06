@@ -1300,10 +1300,6 @@ static BaseType_t prvPvdCommand(char *pcWriteBuffer, size_t xWriteBufferLen, con
             len += (ret > 0) ? (size_t)ret : 0;
         }
         if (len < xWriteBufferLen - 1) {
-            int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "Last retry: %u\r\n", (unsigned int)g_pvd_last_retry);
-            len += (ret > 0) ? (size_t)ret : 0;
-        }
-        if (len < xWriteBufferLen - 1) {
             int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "Power failure: %s\r\n", g_power_failure ? "Yes" : "No");
             len += (ret > 0) ? (size_t)ret : 0;
         }

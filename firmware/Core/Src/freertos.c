@@ -77,7 +77,6 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-#include "uart_ringbuf.h"
 
 extern volatile BaseType_t xInUserInputMode;
 extern volatile uint8_t ucInputIndex;
@@ -108,7 +107,6 @@ int _write(int fd, char *ptr, int len) {
     return -1;
 }
 #endif
-void elog_minitor_test(void);
 
 static void system_pre_init(void) {
     HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_buff, USART_BUFF_SIZE);
@@ -216,8 +214,6 @@ void StartMyTask(void *argument)
     for (;;) {
 
         osDelay(2000);
-        log_d("Debug message from myTask");
-//        uart_rb_write((uint8_t*) "Mytask running!\r\n", sizeof("Mytask running!\r\n"));
 #if (!ELOG_FILE_SYNC_ON_WRITE)
         static int flush_counter = 0;
         flush_counter++;
@@ -227,105 +223,6 @@ void StartMyTask(void *argument)
         }
 #endif
 
-    }
-}
-void elog_minitor_test(void) {
-    static int monitor_counter = 0;
-    monitor_counter++;
-    if (monitor_counter >= 2) {
-        monitor_counter = 0;
-
-        log_i("=== System Monitor ===");
-
-        log_i("--- Running Tasks ---");
-        char taskListBuf[512];
-        vTaskList(taskListBuf);
-        log_i("Name          State  Priority  Stack  Num");
-        log_i("%s", taskListBuf);
-
-        log_i("--- Log Files ---");
-        elog_file_port_lock();
-        lfs_t *pLfs = elog_file_port_get_lfs();
-        struct lfs_config *pLfsCfg = elog_file_port_get_lfs_config();
-        if (pLfs != NULL && pLfsCfg != NULL) {
-            lfs_dir_t dir;
-            int err = lfs_dir_open(pLfs, &dir, "/");
-            if (err == LFS_ERR_OK) {
-                struct lfs_info info;
-                int file_count = 0;
-                while (lfs_dir_read(pLfs, &dir, &info) > 0) {
-                    if ((strcmp(info.name, ".") == 0)
-                            || (strcmp(info.name, "..") == 0)) {
-                        continue;
-                    }
-                    if (info.type == LFS_TYPE_REG) {
-                        log_i("File: %s, Size: %ld bytes", info.name,
-                                info.size);
-                        file_count++;
-                    } else if (info.type == LFS_TYPE_DIR) {
-                        log_i("Dir:  %s", info.name);
-                    }
-                }
-                lfs_dir_close(pLfs, &dir);
-                if (file_count == 0) {
-                    log_i("No files found");
-                }
-            } else {
-                log_e("Failed to open directory, err=%d", err);
-            }
-
-            log_i("--- Flash Usage ---");
-            lfs_ssize_t used_blocks = lfs_fs_size(pLfs);
-            if (used_blocks >= 0) {
-                uint32_t used_bytes = (uint32_t) used_blocks
-                        * pLfsCfg->block_size;
-                uint32_t total_bytes = pLfsCfg->block_count
-                        * pLfsCfg->block_size;
-                uint32_t free_bytes = total_bytes - used_bytes;
-                float used_percent = ((float) used_bytes / total_bytes) * 100;
-                log_i("Used: %lu bytes (%lu blocks), Free: %lu bytes",
-                        used_bytes, (uint32_t )used_blocks, free_bytes);
-                log_i("Total: %lu bytes, Usage: %.1f%%", total_bytes,
-                        used_percent);
-            } else {
-                log_e("Failed to get flash usage, err=%ld", (long )used_blocks);
-
-                if (used_blocks == LFS_ERR_CORRUPT) {
-                    log_w("Filesystem is corrupt, reformatting...");
-
-                    elog_file_port_unlock();
-                    elog_file_deinit();
-                    elog_file_port_lock();
-
-                    int fmt_err = lfs_format(pLfs, pLfsCfg);
-                    if (fmt_err == LFS_ERR_OK) {
-                        fmt_err = lfs_mount(pLfs, pLfsCfg);
-                        if (fmt_err == LFS_ERR_OK) {
-                            log_i("Filesystem reformatted successfully");
-                            used_blocks = lfs_fs_size(pLfs);
-                            if (used_blocks >= 0) {
-                                log_i("New used: %lu blocks",
-                                        (uint32_t )used_blocks);
-                            }
-
-                            elog_file_port_unlock();
-                            elog_file_init();
-                            elog_file_port_lock();
-                        } else {
-                            log_e("Re-mount failed after format, err=%d",
-                                    fmt_err);
-                        }
-                    } else {
-                        log_e("Format failed, err=%d", fmt_err);
-                    }
-                }
-            }
-        } else {
-            log_e("LFS not initialized");
-        }
-        elog_file_port_unlock();
-
-        log_i("=== End Monitor ===");
     }
 }
 

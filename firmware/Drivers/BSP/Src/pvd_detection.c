@@ -30,7 +30,6 @@ static volatile uint8_t system_ready = 0;
 static volatile uint8_t g_pvd_simulate_power_fail = 0;
 
 volatile uint8_t g_pvd_trigger_count = 0;
-volatile uint8_t g_pvd_last_retry = 0;
 volatile uint32_t g_pvd_trigger_timestamp = 0;
 
 extern SPI_HandleTypeDef hspi1;
@@ -47,6 +46,29 @@ static void flash_wait_internal(void)
     while (timeout--) {}
 }
 
+static void pvd_wait_uart_idle(void)
+{
+    extern UART_HandleTypeDef huart1;
+    extern DMA_HandleTypeDef hdma_usart1_tx;
+
+    if (huart1.gState == HAL_UART_STATE_BUSY_TX) {
+        while (DMA2_Stream7->NDTR > 0) {}
+        __HAL_DMA_DISABLE(&hdma_usart1_tx);
+        CLEAR_BIT(USART1->CR3, USART_CR3_DMAT);
+        huart1.gState = HAL_UART_STATE_READY;
+    }
+
+    while (!(USART1->SR & USART_SR_TC)) {}
+}
+
+static void pvd_isr_log(const char *msg)
+{
+    while (*msg) {
+        while (!(USART1->SR & USART_SR_TXE)) {}
+        USART1->DR = (uint8_t)(*msg++);
+    }
+}
+
 void pvd_init(void)
 {
     PWR_PVDTypeDef pvdConfig;
@@ -60,7 +82,6 @@ void pvd_init(void)
     HAL_NVIC_EnableIRQ(PVD_IRQn);
 
     g_pvd_trigger_count = 0;
-    g_pvd_last_retry = 0;
     g_pvd_trigger_timestamp = 0;
 
     system_ready = 0;
@@ -82,25 +103,39 @@ void HAL_PWR_PVDCallback(void)
     g_pvd_trigger_count++;
     g_pvd_trigger_timestamp = HAL_GetTick();
 
+    pvd_wait_uart_idle();
+
+    pvd_isr_log("PVD ISR: entered\r\n");
+
     if (!system_ready) {
         return;
     }
 
     uint8_t pvd_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) ? 1 : 0;
-    
+
     if (!pvd_flag && !g_pvd_simulate_power_fail) {
         return;
     }
 
+    pvd_isr_log("PVD ISR: retry 1\r\n");
+    for (volatile uint32_t i = 0; i < 1000; i++) {}
+    pvd_isr_log("PVD ISR: retry 2\r\n");
+    for (volatile uint32_t i = 0; i < 1000; i++) {}
+    pvd_isr_log("PVD ISR: retry 3\r\n");
+    for (volatile uint32_t i = 0; i < 1000; i++) {}
+
     g_power_failure = 1;
+
+    pvd_isr_log("power failure confirmed\r\n");
+    pvd_isr_log("flushing logs\r\n");
 
     elog_file_flush_all_isr();
 
     spi_wait_for_idle();
     flash_wait_internal();
 
-    extern UART_HandleTypeDef huart1;
-    while (huart1.gState == HAL_UART_STATE_BUSY_TX) {}
+    pvd_isr_log("system reset\r\n");
+
     while (!(USART1->SR & USART_SR_TC)) {}
 
     NVIC_SystemReset();

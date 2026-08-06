@@ -1,7 +1,7 @@
 # STM32 CLI Test Report
 
 ## Test Configuration
-- **Test Date**: 2026-08-06 17:00:07
+- **Test Date**: 2026-08-06 18:03:42
 - **Port**: COM3
 - **Baud Rate**: 115200
 
@@ -9,23 +9,23 @@
 
 | Metric | Value |
 |--------|-------|
-| Total Commands | 437 |
-| Successful Commands | 437 |
+| Total Commands | 1237 |
+| Successful Commands | 1237 |
 | Failed Commands | 0 |
 | Success Rate | 100.0% |
-| Prompts Received | 886 |
+| Prompts Received | 2633 |
 | HardFault Count | 0 |
-| Buffer Full Events | 36 |
-| Total Lines Received | 12800 |
+| Buffer Full Events | 155 |
+| Total Lines Received | 31919 |
 
 ## RTT Analysis
 
 | Metric | Value |
 |--------|-------|
-| Minimum RTT | 14.8 ms |
-| Maximum RTT | 467.9 ms |
-| Average RTT | 69.8 ms |
-| 95th Percentile RTT | 309.3 ms |
+| Minimum RTT | 14.6 ms |
+| Maximum RTT | 665.6 ms |
+| Average RTT | 55.3 ms |
+| 95th Percentile RTT | 202.7 ms |
 
 ## Test Outcome
 
