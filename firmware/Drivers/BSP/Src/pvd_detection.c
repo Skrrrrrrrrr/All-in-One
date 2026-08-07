@@ -73,11 +73,18 @@ void pvd_init(void)
 {
     PWR_PVDTypeDef pvdConfig;
 
+    /* Clear any stale PVD output flag from previous boot before configuring */
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_PVDO);
+
     pvdConfig.PVDLevel = PVD_THRESHOLD_LEVEL;
     pvdConfig.Mode     = PWR_PVD_MODE_IT_FALLING;
 
     HAL_PWR_ConfigPVD(&pvdConfig);
 
+    /* Disable any prematurely-enabled PVD_IRQn (e.g. from HAL_MspInit()),
+     * clear stale pending bits, then re-enable with correct priority. */
+    HAL_NVIC_DisableIRQ(PVD_IRQn);
+    HAL_NVIC_ClearPendingIRQ(PVD_IRQn);
     HAL_NVIC_SetPriority(PVD_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(PVD_IRQn);
 
@@ -92,6 +99,15 @@ void pvd_init(void)
 
 void pvd_mark_ready(void)
 {
+    /* Allow power supply to stabilize before enabling PVD.
+     * During boot/reset, the power supply needs time to settle.
+     * If PVD is enabled too early, a marginal voltage could trigger
+     * a spurious PVD interrupt causing a second system reset. */
+    HAL_Delay(100);
+
+    /* Clear any PVD output flag that may have been set during boot */
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_PVDO);
+
     HAL_PWR_EnablePVD();
     system_ready = 1;
     const char msg[] = "PVD: system ready, PVD enabled\r\n";

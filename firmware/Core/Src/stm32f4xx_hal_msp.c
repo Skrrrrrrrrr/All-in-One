@@ -77,7 +77,8 @@ void HAL_MspInit(void)
   /* Peripheral interrupt init */
   /* PVD_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(PVD_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(PVD_IRQn);
+  /* Do NOT enable PVD_IRQn here - PVD is not configured yet at this point.
+   * It will be enabled later in pvd_init() after proper configuration. */
 
   /* USER CODE BEGIN MspInit 1 */
 

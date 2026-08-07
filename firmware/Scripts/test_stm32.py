@@ -328,6 +328,7 @@ class CLITestSuite:
             ('heap', 'Heap command'),
             ('flash', 'Flash command'),
             ('pvd status', 'PVD status command'),
+            ('top', 'Resource/CPU usage command'),
         ]
         
         for cmd, desc in test_commands:
@@ -338,6 +339,107 @@ class CLITestSuite:
         
         print("  [INFO] Functional test commands queued")
         return True
+    
+    def run_top_command_test(self):
+        """Verify 'top' command output contains all expected sections."""
+        print("\n" + "="*60)
+        print("TOP COMMAND VERIFICATION TEST")
+        print("="*60)
+        
+        # Record current line count to isolate top command output
+        with self.lock:
+            baseline = len(self.received_lines)
+        
+        # Send top command (needs longer timeout due to 500ms sampling)
+        self.command_queue.put(('top', 10))
+        self.command_queue.join()
+        
+        # Give some time for output to be received
+        time.sleep(2)
+        
+        # Collect lines received after baseline
+        with self.lock:
+            top_output_lines = self.received_lines[baseline:]
+        
+        # Join all output into a single string for keyword search
+        top_output = '\n'.join(top_output_lines)
+        
+        # Expected sections in top command output
+        expected_sections = [
+            ('[Heap]', 'Heap usage section'),
+            ('[CPU]', 'CPU usage section'),
+            ('[Flash]', 'Flash usage section'),
+            ('[UART]', 'UART buffer section'),
+            ('Used:', 'Heap used bytes'),
+            ('CPU:', 'Per-task CPU percentage'),
+            ('FreeStack:', 'Task stack high water mark'),
+            ('P:', 'Task priority'),
+        ]
+        
+        all_found = True
+        for keyword, desc in expected_sections:
+            if keyword in top_output:
+                print(f"  [OK] Found '{keyword}' - {desc}")
+            else:
+                print(f"  [FAIL] Missing '{keyword}' - {desc}")
+                all_found = False
+        
+        # Print sample of top output for visual inspection
+        print("\n  [INFO] Sample top command output:")
+        for line in top_output_lines[:15]:
+            if line.strip() and not line.strip().startswith('>'):
+                print(f"    {line}")
+        
+        if all_found:
+            print("\n  [PASS] Top command verification passed")
+        else:
+            print("\n  [FAIL] Top command verification failed - missing sections")
+        
+        return all_found
+    
+    def run_clr_command_test(self):
+        """Verify 'clr' command returns ANSI clear-screen escape sequence."""
+        print("\n" + "="*60)
+        print("CLR COMMAND VERIFICATION TEST")
+        print("="*60)
+        
+        baseline = len(self.received_lines)
+        self.command_queue.put(('clr', 5))
+        self.command_queue.join()
+        time.sleep(1)
+        
+        with self.lock:
+            clr_output_lines = self.received_lines[baseline:]
+        
+        clr_output = '\n'.join(clr_output_lines)
+        
+        # ANSI escape codes expected: ESC[2J (clear), ESC[H (home cursor)
+        has_ansi_clear = '\033[2J' in clr_output or '\x1b[2J' in clr_output
+        has_ansi_home = '\033[H' in clr_output or '\x1b[H' in clr_output
+        
+        # Also check that a prompt is received after clr (terminal is still responsive)
+        has_prompt = '>' in clr_output
+        
+        results = [
+            (has_ansi_clear, 'ANSI clear-screen (ESC[2J)'),
+            (has_ansi_home, 'ANSI cursor-home (ESC[H)'),
+            (has_prompt, 'Prompt received after clr'),
+        ]
+        
+        all_found = True
+        for passed, desc in results:
+            if passed:
+                print(f"  [OK] {desc}")
+            else:
+                print(f"  [FAIL] {desc}")
+                all_found = False
+        
+        if all_found:
+            print("\n  [PASS] clr command verification passed")
+        else:
+            print("\n  [FAIL] clr command verification failed")
+        
+        return all_found
     
     def run_log_tail_test(self):
         print("\n" + "="*60)
@@ -743,6 +845,12 @@ class CLITestSuite:
         try:
             if mode == 'all' or mode == 'functional':
                 self.run_functional_test()
+            
+            if mode == 'all' or mode == 'functional' or mode == 'top':
+                self.run_top_command_test()
+            
+            if mode == 'all' or mode == 'functional' or mode == 'clr':
+                self.run_clr_command_test()
             
             if mode == 'all' or mode == 'logtail':
                 self.run_log_tail_test()
@@ -1235,7 +1343,7 @@ def main():
     parser.add_argument('-p', '--port', default='COM3', help='Serial port (default: COM3)')
     parser.add_argument('-b', '--baud', type=int, default=115200, help='Baud rate (default: 115200)')
     parser.add_argument('-m', '--mode', default='all', 
-                        choices=['all', 'functional', 'stress', 'concurrent', 'buffer', 'reliability', 'pvd', 'logtail', 'logtail-perf', 'logtail-stress'],
+                        choices=['all', 'functional', 'stress', 'concurrent', 'buffer', 'reliability', 'pvd', 'logtail', 'logtail-perf', 'logtail-stress', 'top', 'clr'],
                         help='Test mode')
     parser.add_argument('-d', '--duration', type=int, default=300, help='Test duration in seconds')
     parser.add_argument('-t', '--threads', type=int, default=4, help='Number of concurrent threads')

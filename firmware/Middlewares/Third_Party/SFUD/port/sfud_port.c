@@ -95,24 +95,13 @@ const sfud_port_context_t *sfud_port_get_context(void)
 sfud_err sfud_spi_flash_reset(sfud_flash *flash)
 {
     sfud_err result = SFUD_SUCCESS;
-    uint8_t cmd;
     uint8_t rx_buf[4];
 
-    cmd = SFUD_CMD_ENABLE_RESET;
-    result = flash->spi.wr(flash->user_data, &cmd, 1, NULL, 0);
-    if (result != SFUD_SUCCESS) {
-        return result;
-    }
-
-    cmd = SFUD_CMD_RESET;
-    result = flash->spi.wr(flash->user_data, &cmd, 1, NULL, 0);
-    if (result != SFUD_SUCCESS) {
-        return result;
-    }
-
-    sfud_delay_ms(1);
-
-    cmd = SFUD_CMD_JEDEC_ID;
+    /* Verify flash is responsive by reading JEDEC ID.
+     * Note: Actual hardware reset (EnableReset + Reset) is handled by
+     * sfud's hardware_init() -> reset() to avoid double-reset which
+     * causes unnecessary current spikes. Here we only verify connectivity. */
+    uint8_t cmd = SFUD_CMD_JEDEC_ID;
     result = flash->spi.wr(flash->user_data, &cmd, 1, rx_buf, 3);
     if (result != SFUD_SUCCESS) {
         return result;

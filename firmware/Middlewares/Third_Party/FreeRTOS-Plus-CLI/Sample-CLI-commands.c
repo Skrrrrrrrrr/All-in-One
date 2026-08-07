@@ -141,8 +141,10 @@ static BaseType_t prvFlashCommand(char *pcWriteBuffer, size_t xWriteBufferLen, c
 static BaseType_t prvLogCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvResetCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvStatsCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+static BaseType_t prvResourceCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvPvdCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvShellCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+static BaseType_t prvClearCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 
 /* Structure that defines the "task-stats" command line command.  This generates
  * a table that gives information on each task in the system. */
@@ -270,6 +272,20 @@ static const CLI_Command_Definition_t xShellCommand = {
     0
 };
 
+static const CLI_Command_Definition_t xResourceCommand = {
+    "top",
+    "\r\ntop:\r\n Displays current system resource usage (heap, stack, flash, UART buffer)\r\n",
+    prvResourceCommand,
+    0
+};
+
+static const CLI_Command_Definition_t xClearCommand = {
+    "clr",
+    "\n\nclr:\n Clears the terminal screen\n",
+    prvClearCommand,
+    0
+};
+
 /*-----------------------------------------------------------*/
 
 typedef struct {
@@ -388,6 +404,8 @@ void vRegisterSampleCLICommands( void )
     FreeRTOS_CLIRegisterCommand( &xStatsCommand );
     FreeRTOS_CLIRegisterCommand( &xPvdCommand );
     FreeRTOS_CLIRegisterCommand( &xShellCommand );
+    FreeRTOS_CLIRegisterCommand( &xResourceCommand );
+    FreeRTOS_CLIRegisterCommand( &xClearCommand );
 }
 /*-----------------------------------------------------------*/
 
@@ -1297,6 +1315,182 @@ static BaseType_t prvStatsCommand(char *pcWriteBuffer, size_t xWriteBufferLen, c
     }
 
     pcWriteBuffer[xWriteBufferLen - 1] = '\0';
+    return pdFALSE;
+}
+
+static BaseType_t prvResourceCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+    (void)pcCommandString;
+    size_t len = 0;
+
+    /* Heap usage */
+    uint32_t ulTotalHeap = configTOTAL_HEAP_SIZE;
+    uint32_t ulFreeHeap = xPortGetFreeHeapSize();
+    uint32_t ulMinFreeHeap = xPortGetMinimumEverFreeHeapSize();
+    uint32_t ulUsedHeap = ulTotalHeap - ulFreeHeap;
+    float heap_used_percent = ((float)ulUsedHeap / ulTotalHeap) * 100;
+
+    if (len < xWriteBufferLen - 1) {
+        int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "\r\n--- Resource Usage ---\r\n");
+        len += (ret > 0) ? (size_t)ret : 0;
+    }
+    if (len < xWriteBufferLen - 1) {
+        int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len,
+                            "[Heap] Used: %lu / %lu bytes (%.1f%%), Free: %lu, MinFree: %lu\r\n",
+                            (unsigned long)ulUsedHeap, (unsigned long)ulTotalHeap,
+                            heap_used_percent, (unsigned long)ulFreeHeap, (unsigned long)ulMinFreeHeap);
+        len += (ret > 0) ? (size_t)ret : 0;
+    }
+
+    /* CPU usage + task stack via run-time stats (500ms sampling window)
+     * Two modes selected by FreeRTOS version for compatibility:
+     *   V10.4+: use vTaskResetRunTimeStatistics() (cleaner)
+     *   V10.3-: use two-sample delta with handle matching (works on all versions) */
+    UBaseType_t uxTaskCount = uxTaskGetNumberOfTasks();
+    if (uxTaskCount > 0 && len < xWriteBufferLen - 1) {
+        TaskStatus_t *pxTaskStatusArray = pvPortMalloc(uxTaskCount * sizeof(TaskStatus_t));
+#if !defined(tskKERNEL_VERSION_MAJOR) || !defined(tskKERNEL_VERSION_MINOR) || \
+    (tskKERNEL_VERSION_MAJOR < 10) || \
+    (tskKERNEL_VERSION_MAJOR == 10 && tskKERNEL_VERSION_MINOR < 4)
+        /* Legacy mode: two-sample delta for FreeRTOS V10.3 and earlier.
+         * Save task handles + run-time counters from sample 1, then match by handle
+         * in sample 2 (task order may differ between calls). */
+        TaskHandle_t *pxPrevHandles = pvPortMalloc(uxTaskCount * sizeof(TaskHandle_t));
+        uint32_t *pulPrevRunTime = pvPortMalloc(uxTaskCount * sizeof(uint32_t));
+        UBaseType_t uxPrevCount = 0;
+#endif
+        if (pxTaskStatusArray != NULL
+#if !defined(tskKERNEL_VERSION_MAJOR) || !defined(tskKERNEL_VERSION_MINOR) || \
+    (tskKERNEL_VERSION_MAJOR < 10) || \
+    (tskKERNEL_VERSION_MAJOR == 10 && tskKERNEL_VERSION_MINOR < 4)
+            && pxPrevHandles != NULL && pulPrevRunTime != NULL
+#endif
+        ) {
+            uint32_t ulTotalRunTime = 0;
+            UBaseType_t uxActualCount;
+#if defined(tskKERNEL_VERSION_MAJOR) && defined(tskKERNEL_VERSION_MINOR) && \
+    ((tskKERNEL_VERSION_MAJOR > 10) || \
+     (tskKERNEL_VERSION_MAJOR == 10 && tskKERNEL_VERSION_MINOR >= 4))
+            /* FreeRTOS V10.4+: reset-and-sample mode */
+            vTaskResetRunTimeStatistics();
+            osDelay(pdMS_TO_TICKS(500));
+            uxActualCount = uxTaskGetSystemState(pxTaskStatusArray, uxTaskCount, &ulTotalRunTime);
+#else
+            /* Legacy: two-sample delta mode with handle matching */
+            uxPrevCount = uxTaskGetSystemState(pxTaskStatusArray, uxTaskCount, &ulTotalRunTime);
+            for (UBaseType_t i = 0; i < uxPrevCount; i++) {
+                pxPrevHandles[i] = pxTaskStatusArray[i].xHandle;
+                pulPrevRunTime[i] = pxTaskStatusArray[i].ulRunTimeCounter;
+            }
+            osDelay(pdMS_TO_TICKS(500));
+            uint32_t ulTotalRunTime2 = 0;
+            uxActualCount = uxTaskGetSystemState(pxTaskStatusArray, uxTaskCount, &ulTotalRunTime2);
+            uint32_t ulTotalDelta = ulTotalRunTime2 - ulTotalRunTime; /* uint32 wrap-around safe */
+#endif
+
+            if (len < xWriteBufferLen - 1) {
+                int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len,
+                                    "[CPU] %u tasks (sampled over 500ms):\r\n",
+                                    (unsigned int)uxActualCount);
+                len += (ret > 0) ? (size_t)ret : 0;
+            }
+            for (UBaseType_t i = 0; i < uxActualCount; i++) {
+                if (len >= xWriteBufferLen - 1) break;
+                uint32_t stack_free_bytes = (uint32_t)pxTaskStatusArray[i].usStackHighWaterMark * sizeof(StackType_t);
+                float cpu_percent = 0.0f;
+#if defined(tskKERNEL_VERSION_MAJOR) && defined(tskKERNEL_VERSION_MINOR) && \
+    ((tskKERNEL_VERSION_MAJOR > 10) || \
+     (tskKERNEL_VERSION_MAJOR == 10 && tskKERNEL_VERSION_MINOR >= 4))
+                if (ulTotalRunTime > 0) {
+                    cpu_percent = ((float)pxTaskStatusArray[i].ulRunTimeCounter / ulTotalRunTime) * 100;
+                }
+#else
+                /* Match current task to sample-1 snapshot by handle */
+                uint32_t task_delta = 0;
+                for (UBaseType_t j = 0; j < uxPrevCount; j++) {
+                    if (pxPrevHandles[j] == pxTaskStatusArray[i].xHandle) {
+                        task_delta = pxTaskStatusArray[i].ulRunTimeCounter - pulPrevRunTime[j];
+                        break;
+                    }
+                }
+                if (ulTotalDelta > 0) {
+                    cpu_percent = ((float)task_delta / ulTotalDelta) * 100;
+                }
+#endif
+                int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len,
+                                    "  %-16.16s P:%-2u CPU:%5.1f%%  FreeStack: %lu bytes\r\n",
+                                    pxTaskStatusArray[i].pcTaskName,
+                                    (unsigned int)pxTaskStatusArray[i].uxCurrentPriority,
+                                    cpu_percent,
+                                    (unsigned long)stack_free_bytes);
+                len += (ret > 0) ? (size_t)ret : 0;
+            }
+        } else {
+            if (len < xWriteBufferLen - 1) {
+                int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "[CPU] Failed to allocate task status array\r\n");
+                len += (ret > 0) ? (size_t)ret : 0;
+            }
+        }
+        if (pxTaskStatusArray) vPortFree(pxTaskStatusArray);
+#if !defined(tskKERNEL_VERSION_MAJOR) || !defined(tskKERNEL_VERSION_MINOR) || \
+    (tskKERNEL_VERSION_MAJOR < 10) || \
+    (tskKERNEL_VERSION_MAJOR == 10 && tskKERNEL_VERSION_MINOR < 4)
+        if (pxPrevHandles) vPortFree(pxPrevHandles);
+        if (pulPrevRunTime) vPortFree(pulPrevRunTime);
+#endif
+    }
+
+    /* Flash filesystem usage */
+    elog_file_port_lock();
+    lfs_t *pLfs = elog_file_port_get_lfs();
+    struct lfs_config *pLfsCfg = elog_file_port_get_lfs_config();
+    if (pLfs != NULL && pLfsCfg != NULL) {
+        lfs_ssize_t used_blocks = lfs_fs_size(pLfs);
+        if (used_blocks >= 0) {
+            uint32_t used_bytes = (uint32_t)used_blocks * pLfsCfg->block_size;
+            uint32_t total_bytes = pLfsCfg->block_count * pLfsCfg->block_size;
+            float flash_used_percent = ((float)used_bytes / total_bytes) * 100;
+            if (len < xWriteBufferLen - 1) {
+                int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len,
+                                    "[Flash] Used: %lu / %lu bytes (%.1f%%)\r\n",
+                                    (unsigned long)used_bytes, (unsigned long)total_bytes, flash_used_percent);
+                len += (ret > 0) ? (size_t)ret : 0;
+            }
+        } else {
+            if (len < xWriteBufferLen - 1) {
+                int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "[Flash] Failed to get usage, err=%ld\r\n", (long)used_blocks);
+                len += (ret > 0) ? (size_t)ret : 0;
+            }
+        }
+    } else {
+        if (len < xWriteBufferLen - 1) {
+            int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "[Flash] Filesystem not initialized\r\n");
+            len += (ret > 0) ? (size_t)ret : 0;
+        }
+    }
+    elog_file_port_unlock();
+
+    /* UART ring buffer usage */
+    uart_rb_stats_t rb_stats;
+    uart_rb_get_stats(&rb_stats);
+    if (len < xWriteBufferLen - 1) {
+        int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len,
+                            "[UART] Buffer used: %lu bytes, Dropped: %lu bytes, Full count: %lu\r\n",
+                            (unsigned long)rb_stats.current_used,
+                            (unsigned long)rb_stats.total_dropped,
+                            (unsigned long)rb_stats.buffer_full_count);
+        len += (ret > 0) ? (size_t)ret : 0;
+    }
+
+    pcWriteBuffer[xWriteBufferLen - 1] = '\0';
+    return pdFALSE;
+}
+
+static BaseType_t prvClearCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+    (void)pcCommandString;
+    /* ANSI escape: ESC[2J = clear entire screen, ESC[H = move cursor to home (1,1) */
+    snprintf(pcWriteBuffer, xWriteBufferLen, "\033[2J\033[H");
     return pdFALSE;
 }
 

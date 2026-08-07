@@ -45,6 +45,9 @@
 
 /* USER CODE BEGIN Includes */
 /* Section where include file can be added */
+#if defined(__ICCARM__) || defined(__CC_ARM) || defined(__GNUC__)
+  #include "stm32f4xx.h"
+#endif
 /* USER CODE END Includes */
 
 /* Ensure definitions are only used by the compiler, and not by the assembler. */
@@ -172,6 +175,17 @@ standard names. */
 #define INCLUDE_vTaskList                    1
 #define INCLUDE_vTaskGetRunTimeStats         1
 #define configUSE_STATS_FORMATTING_FUNCTIONS     1
+
+/* Enable run-time stats using DWT CYCCNT (Cortex-M4 built-in, no timer needed).
+ * Note: CYCCNT runs at CPU clock (168MHz), 32-bit counter overflows in ~25s.
+ * The 'top' CLI command uses reset-and-sample mode (500ms window) to avoid overflow. */
+#define configGENERATE_RUN_TIME_STATS         1
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() do { \
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; \
+    DWT->CYCCNT = 0; \
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk; \
+} while(0)
+#define portGET_RUN_TIME_COUNTER_VALUE() (DWT->CYCCNT)
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */
