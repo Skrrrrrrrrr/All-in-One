@@ -54,6 +54,25 @@
 #include "pvd_detection.h"
 #include "sfud.h"
 
+/* Auto-detect CPU model from compile-time macro. */
+#if defined(STM32F407xx)
+    #define CPU_MODEL_STRING "STM32F407"
+#elif defined(STM32F411xE)
+    #define CPU_MODEL_STRING "STM32F411"
+#elif defined(STM32F401xE)
+    #define CPU_MODEL_STRING "STM32F401"
+#elif defined(STM32F401xC)
+    #define CPU_MODEL_STRING "STM32F401"
+#elif defined(STM32F429xx)
+    #define CPU_MODEL_STRING "STM32F429"
+#elif defined(STM32F446xx)
+    #define CPU_MODEL_STRING "STM32F446"
+#elif defined(STM32F469xx)
+    #define CPU_MODEL_STRING "STM32F469"
+#else
+    #define CPU_MODEL_STRING "STM32F4xx"
+#endif
+
 #ifndef  configINCLUDE_TRACE_RELATED_CLI_COMMANDS
     #define configINCLUDE_TRACE_RELATED_CLI_COMMANDS    0
 #endif
@@ -389,7 +408,11 @@ static BaseType_t prvShellCommand(char *pcWriteBuffer, size_t xWriteBufferLen, c
     }
 
     if (len < xWriteBufferLen - 1) {
-        int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "CPU: STM32F411CCU6\r\n");
+        uint32_t dev_id = (DBGMCU->IDCODE) & DBGMCU_IDCODE_DEV_ID;
+        uint32_t rev_id = ((DBGMCU->IDCODE) & DBGMCU_IDCODE_REV_ID) >> DBGMCU_IDCODE_REV_ID_Pos;
+        int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len,
+                            "CPU: %s (DEV_ID:0x%03lX, REV_ID:0x%04lX)\r\n",
+                            CPU_MODEL_STRING, (unsigned long)dev_id, (unsigned long)rev_id);
         len += (ret > 0) ? (size_t)ret : 0;
     }
 
