@@ -1272,9 +1272,20 @@ static BaseType_t prvResetCommand(char *pcWriteBuffer, size_t xWriteBufferLen, c
 {
     (void)pcCommandString;
 
+    /* Disable PVD FIRST, before any delay, to prevent spurious PVD trigger
+     * during the 200ms wait window. The PVD ISR has priority 0 (highest)
+     * and will preempt this task if PVD stays enabled. */
+    HAL_PWR_DisablePVD();
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_PVDO);
+    EXTI->PR = EXTI_PR_PR16;
+    HAL_NVIC_ClearPendingIRQ(PVD_IRQn);
+    HAL_NVIC_DisableIRQ(PVD_IRQn);
+
     snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nSystem resetting...\r\n");
 
     osDelay(200);
+
+    __disable_irq();
     NVIC_SystemReset();
 
     return pdFALSE;

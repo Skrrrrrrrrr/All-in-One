@@ -116,6 +116,11 @@ void pvd_mark_ready(void)
 
 void HAL_PWR_PVDCallback(void)
 {
+    /* If PVD is disabled (e.g. during software reset), ignore this interrupt */
+    if (!(PWR->CR & PWR_CR_PVDE)) {
+        return;
+    }
+
     g_pvd_trigger_count++;
     g_pvd_trigger_timestamp = HAL_GetTick();
 

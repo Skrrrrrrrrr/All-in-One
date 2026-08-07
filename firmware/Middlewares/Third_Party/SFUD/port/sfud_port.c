@@ -285,7 +285,7 @@ sfud_err sfud_spi_port_init(sfud_flash *flash) {
     }
 
     switch (flash->index) {
-    case SFUD_W25Q32BV_DEVICE_INDEX:
+//    case SFUD_W25Q32BV_DEVICE_INDEX:
     case SFUD_W25Q128BV_DEVICE_INDEX: {
         flash->spi.wr = spi_write_read;
 #ifdef SFUD_USING_QSPI
