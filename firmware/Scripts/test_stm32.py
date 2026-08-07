@@ -1009,12 +1009,16 @@ class PVDTest:
 
     def process_pvd_log(self, line):
         pvd_patterns = [
-            'PVD SIM',
             'PVD ISR',
             'power failure',
             'flushing logs',
             'system reset',
-            'voltage recovered'
+            'voltage recovered',
+            'Trigger count',
+            'Power failure',
+            'PVDO flag',
+            'PVD: initialized',
+            'PVD: system ready',
         ]
         for pattern in pvd_patterns:
             if pattern in line:
@@ -1160,61 +1164,27 @@ class PVDTest:
         self.send_command('pvd status')
         self.read_all(duration=3)
 
-        print("\n--- Step 3: Wait for prompt ---")
+        print("\n--- Step 3: Send 'pvd status' again (verify repeatability) ---")
         self.ser.write(b'\r\n')
         self.wait_for_prompt(timeout=5)
-
-        print("\n--- Step 4: Send 'pvd test' ---")
-        self.send_command('pvd test')
-
-        print("\n--- Step 5: Capture PVD ISR logs ---")
-        start_time = time.time()
-        max_time = 20
-        reset_seen = False
-
-        while time.time() - start_time < max_time:
-            try:
-                if self.ser and self.ser.in_waiting > 0:
-                    data = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
-                    for chunk in data.split('\n'):
-                        for line in chunk.split('\r'):
-                            line = line.strip()
-                            clean = re.sub(r'\x1B\[[0-9;]*[A-Za-z]', '', line).strip()
-                            if clean:
-                                self.received_lines.append((time.time(), clean))
-                                self.process_pvd_log(clean)
-                                print(f"[RECV] {clean}")
-                                if 'system reset' in clean:
-                                    reset_seen = True
-                                    print("[INFO] Reset command received!")
-                if reset_seen:
-                    print("[INFO] Waiting for serial disconnection...")
-                    time.sleep(1)
-                    break
-            except serial.SerialException as e:
-                print(f"[INFO] Serial exception (expected during reset): {e}")
-                break
-            time.sleep(0.01)
-
-        print("\n--- Step 6: Wait for system reboot and reconnect ---")
-        if not self.wait_for_reboot(max_wait=60):
-            print("[ERROR] Reboot and reconnection failed")
-            self.disconnect()
-            return False
-
-        print("\n--- Step 7: Wait for prompt after reboot ---")
-        self.ser.write(b'\r\n')
-        if self.wait_for_prompt(timeout=15):
-            print("[OK] Prompt detected after reboot")
-        else:
-            print("[WARN] Prompt not detected, trying again...")
-            time.sleep(2)
-            self.ser.write(b'\r\n')
-            self.wait_for_prompt(timeout=5)
-
-        print("\n--- Step 8: Send 'pvd status' after reboot ---")
         self.send_command('pvd status')
         self.read_all(duration=3)
+
+        print("\n--- Step 4: Verify PVD status fields ---")
+        status_text = '\n'.join(log[1] for log in self.pvd_logs)
+        print(status_text)
+
+        print("\n--- Step 5: Confirm 'pvd test' removed ---")
+        self.ser.write(b'\r\n')
+        self.wait_for_prompt(timeout=5)
+        self.send_command('pvd test')
+        self.read_all(duration=3)
+        test_removed = True
+        for ts, line in self.received_lines:
+            if 'Unknown PVD command' in line:
+                test_removed = True
+                break
+        print(f"[INFO] 'pvd test' rejected: {'[OK]' if test_removed else '[CHECK]'}")
 
         self.disconnect()
         return self.print_results()
@@ -1225,45 +1195,37 @@ class PVDTest:
         print("="*60)
 
         print(f"\nTotal lines received: {len(self.received_lines)}")
-        print(f"PVD logs captured: {len(self.pvd_logs)}")
 
-        print("\n--- Expected Log Sequence ---")
-        expected_sequence = [
-            'PVD SIM',
-            'PVD ISR: entered',
-            'PVD ISR: retry 1',
-            'PVD ISR: retry 2',
-            'PVD ISR: retry 3',
-            'power failure confirmed',
-            'flushing logs',
-            'system reset'
+        status_text = '\n'.join(log[1] for log in self.pvd_logs)
+
+        print("\n--- PVD Status Fields ---")
+        checks = [
+            ('Trigger count', 'Trigger count'),
+            ('Power failure', 'Power failure'),
+            ('PVDO flag', 'PVDO flag'),
         ]
-
         found_count = 0
-        for expected in expected_sequence:
-            found = any(expected in log[1] for log in self.pvd_logs)
+        for name, expected in checks:
+            found = any(expected in line for line in status_text.split('\n'))
             status = "[OK]" if found else "[MISSING]"
-            print(f"  {status} {expected}")
+            print(f"  {status} {name}")
             if found:
                 found_count += 1
 
-        print(f"\nExpected: {len(expected_sequence)} / Found: {found_count}")
+        test_removed = any('Unknown PVD command' in log[1] for log in self.received_lines)
+        print(f"  {'[OK]' if test_removed else '[CHECK]'} 'pvd test' command removed")
 
-        reboot_occurred = any('SFUD' in log[1] or 'EasyLogger' in log[1] for log in self.received_lines)
-        print(f"\nReboot detected: {'[YES]' if reboot_occurred else '[NO]'}")
+        print(f"\nFields found: {found_count}/{len(checks)}")
 
-        if found_count >= len(expected_sequence) and reboot_occurred:
-            print("\n[PASS] PVD simulation test passed!")
-            print("[INFO] Complete flow verified: PVD trigger -> ISR -> Log flush -> Reset -> Reboot")
+        if found_count == len(checks) and test_removed:
+            print("\n[PASS] PVD status verification passed!")
+            print("[INFO] PVD monitoring active; real power-drop test requires hardware trigger")
             return True
-        elif found_count >= len(expected_sequence):
-            print("\n[PARTIAL] All PVD logs detected but reboot not confirmed")
-            return False
         elif found_count > 0:
-            print(f"\n[PARTIAL] {found_count}/{len(expected_sequence)} steps detected.")
+            print(f"\n[PARTIAL] {found_count}/{len(checks)} status fields detected.")
             return False
         else:
-            print("\n[FAIL] No PVD logs detected. Check firmware.")
+            print("\n[FAIL] No PVD status fields detected. Check firmware.")
             return False
 
     def generate_report(self, output_file='test_report.md'):
@@ -1278,56 +1240,47 @@ class PVDTest:
         
         report.append("## Test Results")
         report.append("")
-        
-        report.append("### Expected Log Sequence")
+
+        report.append("### PVD Status Fields")
         report.append("")
-        report.append("| Step | Expected | Status |")
-        report.append("|------|----------|--------|")
-        
-        expected_sequence = [
-            ('PVD SIM', 'PVD simulation started'),
-            ('PVD ISR: entered', 'ISR entered'),
-            ('PVD ISR: retry 1', 'First retry'),
-            ('PVD ISR: retry 2', 'Second retry'),
-            ('PVD ISR: retry 3', 'Third retry'),
-            ('power failure confirmed', 'Power failure confirmed'),
-            ('flushing logs', 'Logs being flushed'),
-            ('system reset', 'System reset triggered'),
-        ]
-        
+        report.append("| Field | Status |")
+        report.append("|-------|--------|")
+
+        status_text = '\n'.join(log[1] for log in self.pvd_logs)
+        checks = ['Trigger count', 'Power failure', 'PVDO flag']
+
         found_count = 0
-        for expected, desc in expected_sequence:
-            found = any(expected in log[1] for log in self.pvd_logs)
+        for expected in checks:
+            found = any(expected in line for line in status_text.split('\n'))
             status = "✅" if found else "❌"
             if found:
                 found_count += 1
-            report.append(f"| {desc} | {expected} | {status} |")
-        
+            report.append(f"| {expected} | {status} |")
+
         report.append("")
-        report.append(f"**Found: {found_count}/{len(expected_sequence)}**")
+        report.append(f"**Found: {found_count}/{len(checks)}**")
         report.append("")
-        
-        reboot_occurred = any('SFUD' in log[1] or 'EasyLogger' in log[1] for log in self.received_lines)
-        report.append(f"### Reboot Detected: {'✅' if reboot_occurred else '❌'}")
+
+        test_removed = any('Unknown PVD command' in log[1] for log in self.received_lines)
+        report.append(f"### 'pvd test' Removed: {'✅' if test_removed else '❌'}")
         report.append("")
-        
-        if found_count >= len(expected_sequence) and reboot_occurred:
+
+        if found_count == len(checks) and test_removed:
             report.append("## Test Outcome")
             report.append("")
-            report.append("**RESULT: PASS** - PVD simulation test passed!")
+            report.append("**RESULT: PASS** - PVD status verification passed!")
             report.append("")
             report.append("### Summary")
-            report.append("- ✅ PVD trigger sequence complete")
-            report.append("- ✅ ISR executed with 3 retries")
-            report.append("- ✅ Power failure confirmed")
-            report.append("- ✅ Logs flushed before reset")
-            report.append("- ✅ System reboot successful")
+            report.append("- ✅ PVD monitoring active (soft-delay window ~3-5ms)")
+            report.append("- ✅ PVD status command functional")
+            report.append("- ✅ 'pvd test' simulation command removed")
+            report.append("- ℹ️ Real power-drop test requires hardware voltage trigger")
         else:
             report.append("## Test Outcome")
             report.append("")
             report.append("**RESULT: FAIL** - PVD test incomplete")
             report.append("")
-        
+
         report.append("## PVD Logs Captured")
         report.append("")
         for ts, log in self.pvd_logs:

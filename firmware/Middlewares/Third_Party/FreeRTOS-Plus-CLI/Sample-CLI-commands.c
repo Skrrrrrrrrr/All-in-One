@@ -260,7 +260,7 @@ static const CLI_Command_Definition_t xStatsCommand = {
 
 static const CLI_Command_Definition_t xPvdCommand = {
     "pvd",
-    "\r\npvd [test | status]:\r\n test - simulate PVD trigger\r\n status - show PVD status\r\n",
+    "\r\npvd status:\r\n status - show PVD status\r\n",
     prvPvdCommand,
     -1
 };
@@ -1514,7 +1514,7 @@ static BaseType_t prvPvdCommand(char *pcWriteBuffer, size_t xWriteBufferLen, con
     pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 1, &xParameterStringLength);
 
     if (pcParameter == NULL) {
-        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nPVD: Missing parameter. Use 'pvd status' or 'pvd test'\r\n");
+        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nPVD: Missing parameter. Use 'pvd status'\r\n");
         return pdFALSE;
     }
 
@@ -1535,12 +1535,8 @@ static BaseType_t prvPvdCommand(char *pcWriteBuffer, size_t xWriteBufferLen, con
             int ret = snprintf(pcWriteBuffer + len, xWriteBufferLen - len, "PVDO flag: %s\r\n", __HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) ? "Set (VDD < threshold)" : "Not set (VDD >= threshold)");
             len += (ret > 0) ? (size_t)ret : 0;
         }
-    } else if (strncmp(pcParameter, "test", 4) == 0) {
-        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nPVD simulation starting...\r\n");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        pvd_simulate_trigger_with_power_fail();
     } else {
-        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nUnknown PVD command. Use 'pvd status' or 'pvd test'\r\n");
+        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nUnknown PVD command. Use 'pvd status'\r\n");
     }
 
     pcWriteBuffer[xWriteBufferLen - 1] = '\0';

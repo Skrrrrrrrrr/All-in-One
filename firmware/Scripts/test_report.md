@@ -1,42 +1,31 @@
-# STM32 CLI Test Report
+# STM32 PVD Test Report
 
 ## Test Configuration
-- **Test Date**: 2026-08-07 12:48:47
+- **Test Date**: 2026-08-07 14:13:35
 - **Port**: COM3
 - **Baud Rate**: 115200
 
-## Test Results Summary
+## Test Results
 
-| Metric | Value |
-|--------|-------|
-| Total Commands | 640 |
-| Successful Commands | 640 |
-| Failed Commands | 0 |
-| Success Rate | 100.0% |
-| Prompts Received | 1203 |
-| HardFault Count | 0 |
-| Buffer Full Events | 66 |
-| Total Lines Received | 18003 |
+### Expected Log Sequence
 
-## RTT Analysis
+| Step | Expected | Status |
+|------|----------|--------|
+| PVD simulation started | PVD SIM | ❌ |
+| ISR entered | PVD ISR: entered | ❌ |
+| First retry | PVD ISR: retry 1 | ❌ |
+| Second retry | PVD ISR: retry 2 | ❌ |
+| Third retry | PVD ISR: retry 3 | ❌ |
+| Power failure confirmed | power failure confirmed | ❌ |
+| Logs being flushed | flushing logs | ❌ |
+| System reset triggered | system reset | ❌ |
 
-| Metric | Value |
-|--------|-------|
-| Minimum RTT | 14.8 ms |
-| Maximum RTT | 841.5 ms |
-| Average RTT | 77.0 ms |
-| 95th Percentile RTT | 248.1 ms |
+**Found: 0/8**
+
+### Reboot Detected: ❌
 
 ## Test Outcome
 
-**RESULT: PASS** - All tests completed successfully
+**RESULT: FAIL** - PVD test incomplete
 
-## System Health Assessment
-
-- ✅ System stable under stress
-- ✅ No memory corruption detected
-- ✅ CLI commands responsive
-
-## Error Log
-
-No errors recorded
+## PVD Logs Captured

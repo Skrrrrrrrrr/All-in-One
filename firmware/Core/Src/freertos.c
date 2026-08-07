@@ -208,18 +208,25 @@ void StartMyTask(void *argument)
     pvd_mark_ready();
 
     vRegisterSampleCLICommands();
-    vUARTCommandConsoleStart(1024, osPriorityNormal);
+    /* CLI task priority lowered below myTask (osPriorityLow): it only
+     * polls the UART, so a PVD event handled by myTask must never wait
+     * for the CLI to yield. */
+    vUARTCommandConsoleStart(1024, osPriorityIdle);
 
     /* Infinite loop */
     for (;;) {
 
-        osDelay(2000);
+        /* Soft-delay poll period ~1ms: yield CPU, then check PVD event.
+         * pvd_poll_handler fast-returns when no event is pending. */
+        osDelay(1);
+		pvd_poll_handler();
+
 #if (!ELOG_FILE_SYNC_ON_WRITE)
-        static int flush_counter = 0;
-        flush_counter++;
-        if (flush_counter >= (ELOG_FILE_FLUSH_INTERVAL_MS / 1000)) {
+        static uint32_t last_flush_tick = 0;
+        uint32_t now = HAL_GetTick();
+        if (now - last_flush_tick >= ELOG_FILE_FLUSH_INTERVAL_MS) {
             elog_file_flush_all();
-            flush_counter = 0;
+            last_flush_tick = now;
         }
 #endif
 

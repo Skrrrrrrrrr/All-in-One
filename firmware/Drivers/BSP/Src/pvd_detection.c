@@ -1,18 +1,33 @@
 /*
  * pvd_detection.c
  *
- * PVD (Programmable Voltage Detector) implementation for STM32F411.
+ * PVD (Programmable Voltage Detector) implementation for STM32F407.
  *
- * On power failure (VDD < 2.7V):
- *   1. PVD_IRQHandler is triggered via EXTI Line 16
- *   2. elog_file_flush_all_isr() syncs all pending log data to SPI Flash
- *   3. lfs_unmount() ensures file system integrity
- *   4. System resets via NVIC_SystemReset()
+ * Architecture (two-stage, soft-delay monitoring):
+ *   1. HAL_PWR_PVDCallback (ISR context) - LIGHTWEIGHT:
+ *        Records count/timestamp, sets g_pvd_event_flag, clears EXTI pending.
+ *        No busy-waits, no FreeRTOS API calls, no SPI/Flash access.
+ *        Exits in < 1us to avoid blocking lower-prio IRQs.
  *
- * ISR safety:
- *   - PVD interrupt runs at highest priority (0)
- *   - The ISR-safe flush function bypasses mutex (safe since ISR has exclusive access)
- *   - Total ISR execution time: ~3-5ms (within capacitor hold-up budget)
+ *   2. pvd_poll_handler (task context, called from StartMyTask every ~1ms):
+ *        When g_pvd_event_flag is set, runs a soft-delay PVDO verification
+ *        window of ~3-5ms using vTaskDelay (yields CPU, no DWT busy-wait):
+ *          check 1 (t=0)    -> read PVDO -> log "retry N"
+ *          vTaskDelay(2ms)  -> t~2ms
+ *          check 2 (t~2ms)  -> read PVDO -> log "retry N+1"
+ *          vTaskDelay(2ms)  -> t~4ms
+ *          check 3 (t~4ms)  -> read PVDO -> log "retry N+2"
+ *        Retry rounds are bound to g_pvd_trigger_count (start counter N).
+ *        All 3 checks must see PVDO=1 to confirm power failure. If any
+ *        check reads PVDO=0, voltage recovered, abort and clear state.
+ *        After each monitoring round, g_pvd_event_flag and
+ *        g_pvd_trigger_count are cleared.
+ *
+ * On real power failure (VDD < 2.7V):
+ *   - Hold-up capacitor (>= 100uF) gives ~5-10ms of budget.
+ *   - myTask wakes every ~1ms; worst-case event-to-detect latency is
+ *     ~1ms poll + ~4ms window = ~5ms.
+ *   - The soft-delay window filters out transient glitches.
  */
 
 #include "pvd_detection.h"
@@ -21,19 +36,19 @@
 #include "spi.h"
 #include "stm32f4xx_hal.h"
 #include "FreeRTOS.h"
-
-extern volatile BaseType_t xInUserInputMode;
-extern volatile BaseType_t xPromptRefreshNeeded;
+#include "task.h"
+#include <stdio.h>
 
 volatile uint8_t g_power_failure = 0;
-static volatile uint8_t system_ready = 0;
-static volatile uint8_t g_pvd_simulate_power_fail = 0;
-
 volatile uint8_t g_pvd_trigger_count = 0;
 volatile uint32_t g_pvd_trigger_timestamp = 0;
 
+static volatile uint8_t system_ready = 0;
+static volatile uint8_t g_pvd_event_flag = 0;   /* set by ISR, cleared by handler */
+static const uint8_t PVD_ISR_RETRY_MAX_COUNT = 10;/* 10ms PVD detect*/
 extern SPI_HandleTypeDef hspi1;
 
+#if (!ELOG_FILE_SYNC_ON_WRITE)
 static void spi_wait_for_idle(void)
 {
     uint32_t timeout = 100000;
@@ -45,6 +60,8 @@ static void flash_wait_internal(void)
     uint32_t timeout = 60000;
     while (timeout--) {}
 }
+#endif
+
 
 static void pvd_wait_uart_idle(void)
 {
@@ -61,7 +78,7 @@ static void pvd_wait_uart_idle(void)
     while (!(USART1->SR & USART_SR_TC)) {}
 }
 
-static void pvd_isr_log(const char *msg)
+static void pvd_direct_log(const char *msg)
 {
     while (*msg) {
         while (!(USART1->SR & USART_SR_TXE)) {}
@@ -81,19 +98,18 @@ void pvd_init(void)
 
     HAL_PWR_ConfigPVD(&pvdConfig);
 
-    /* Disable any prematurely-enabled PVD_IRQn (e.g. from HAL_MspInit()),
-     * clear stale pending bits, then re-enable with correct priority. */
+    /* Reconfigure PVD IRQ: clear stale pending bits and use a priority
+     * that does not need FreeRTOS API calls (the ISR only sets a flag). */
     HAL_NVIC_DisableIRQ(PVD_IRQn);
     HAL_NVIC_ClearPendingIRQ(PVD_IRQn);
-    HAL_NVIC_SetPriority(PVD_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(PVD_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(PVD_IRQn);
 
     g_pvd_trigger_count = 0;
-    g_pvd_trigger_timestamp = 0;
-
+    g_pvd_event_flag = 0;
     system_ready = 0;
 
-    const char msg[] = "PVD: initialized at 2.7V threshold, waiting for stable power\r\n";
+    const char msg[] = "[PVD] initialized at 2.7V threshold, waiting for stable power\r\n";
     uart_rb_write((uint8_t*)msg, sizeof(msg) - 1);
 }
 
@@ -110,72 +126,112 @@ void pvd_mark_ready(void)
 
     HAL_PWR_EnablePVD();
     system_ready = 1;
-    const char msg[] = "PVD: system ready, PVD enabled\r\n";
+    const char msg[] = "[PVD] system ready, PVD enabled\r\n";
     uart_rb_write((uint8_t*)msg, sizeof(msg) - 1);
 }
 
+/* ------------------------------------------------------------------
+ * ISR: Minimal action - only record the event, exit immediately.
+ * All verification / shutdown logic lives in pvd_poll_handler
+ * which runs in task context (StartMyTask soft-delay loop).
+ * ------------------------------------------------------------------ */
 void HAL_PWR_PVDCallback(void)
 {
-    /* If PVD is disabled (e.g. during software reset), ignore this interrupt */
+    /* If PVD peripheral itself is disabled (e.g. during software reset),
+     * this must be a stale interrupt - ignore it. */
     if (!(PWR->CR & PWR_CR_PVDE)) {
+        return;
+    }
+
+    /* System not yet initialized - just drop the event */
+    if (!system_ready) {
         return;
     }
 
     g_pvd_trigger_count++;
     g_pvd_trigger_timestamp = HAL_GetTick();
 
-    pvd_wait_uart_idle();
+    /* Signal the event to the task-context handler */
+    g_pvd_event_flag = 1;
 
-    pvd_isr_log("PVD ISR: entered\r\n");
+    /* Clear EXTI pending so a re-trigger can set the event again
+     * (e.g. after an aborted glitch). */
+    EXTI->PR = EXTI_PR_PR16;
+}
 
+/* ------------------------------------------------------------------
+ * Task-context handler. Called from StartMyTask every ~1ms.
+ * Fast return when no event is pending. When an event is set, runs the
+ * soft-delay (~3-5ms) PVDO verification window:
+ *   3 checks, ~2ms apart (vTaskDelay yields CPU, no DWT busy-wait).
+ *   Retry rounds are bound to g_pvd_trigger_count: the round number is
+ *   generated from the start counter (base_count), so the log reflects
+ *   the actual trigger count instead of a hard-coded 1/2/3.
+ *   All 3 must confirm PVDO=1 -> power failure.
+ *   Any PVDO=0 -> voltage recovered, abort.
+ * After the round, g_pvd_event_flag and g_pvd_trigger_count are cleared.
+ * ------------------------------------------------------------------ */
+void pvd_poll_handler(void)
+{
     if (!system_ready) {
         return;
     }
 
-    uint8_t pvd_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) ? 1 : 0;
-
-    if (!pvd_flag && !g_pvd_simulate_power_fail) {
+    /* No event pending - fast return (called every ~1ms from myTask) */
+    if (!g_pvd_event_flag) {
         return;
     }
 
-    pvd_isr_log("PVD ISR: retry 1\r\n");
-    for (volatile uint32_t i = 0; i < 1000; i++) {}
-    pvd_isr_log("PVD ISR: retry 2\r\n");
-    for (volatile uint32_t i = 0; i < 1000; i++) {}
-    pvd_isr_log("PVD ISR: retry 3\r\n");
-    for (volatile uint32_t i = 0; i < 1000; i++) {}
+    /* Drain UART / DMA so our diagnostic lines come out cleanly */
+    pvd_wait_uart_idle();
 
-    g_power_failure = 1;
+    pvd_direct_log("PVD ISR: entered\r\n");
 
-    pvd_isr_log("power failure confirmed\r\n");
-    pvd_isr_log("flushing logs\r\n");
+    static uint8_t base_pvd_trigger_count = 0;
 
-    elog_file_flush_all_isr();
+	if (base_pvd_trigger_count++ < PVD_ISR_RETRY_MAX_COUNT) {
 
-    spi_wait_for_idle();
-    flash_wait_internal();
+		uint8_t pvd_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) ? 1 : 0;
 
-    pvd_isr_log("system reset\r\n");
+		/* Round number bound to trigger count: base_count + i */
+		char retry_buf[24];
+		int ret = snprintf(retry_buf, sizeof(retry_buf),
+				"[PVD] ISR: retry %u\r\n", (unsigned int) (base_pvd_trigger_count));
+		if (ret > 0) {
+			pvd_direct_log(retry_buf);
+		}
 
-    while (!(USART1->SR & USART_SR_TC)) {}
+		if (!pvd_flag) {
+			/* Voltage recovered before window completes */
+	        pvd_direct_log("[PVD] voltage recovered, abort\r\n");
+		    /* Clear trigger counter for this monitoring round */
+		    g_pvd_event_flag = 0;
+		    base_pvd_trigger_count = 0;
+		}
+	} else {
 
-    NVIC_SystemReset();
-}
+	    /* Clear trigger counter for this monitoring round */
+	    g_pvd_event_flag = 0;
+	    base_pvd_trigger_count = 0;
 
-void pvd_simulate_trigger(void)
-{
-    const char sim_msg[] = "PVD SIM: simulating power failure trigger\r\n";
-    uart_rb_write((uint8_t*)sim_msg, sizeof(sim_msg) - 1);
+		/* --- PVDO confirmed low for the full window: power failure --- */
+		g_power_failure = 1;
 
-    HAL_PWR_PVDCallback();
-}
+		pvd_direct_log("[PVD]power failure confirmed\r\n");
+#if (!ELOG_FILE_SYNC_ON_WRITE)
+		/* Flush all pending log data to SPI Flash */
+		elog_file_flush_all_isr();
+		pvd_direct_log("[PVD]flushing logs\r\n");
 
-void pvd_simulate_trigger_with_power_fail(void)
-{
-    const char sim_msg[] = "PVD SIM: simulating power failure (force mode)\r\n";
-    uart_rb_write((uint8_t*)sim_msg, sizeof(sim_msg) - 1);
+		spi_wait_for_idle();
+		flash_wait_internal();
+#endif
+		pvd_direct_log("[PVD]system reset\r\n");
 
-    g_pvd_simulate_power_fail = 1;
+		/* Ensure diagnostic bytes have left the UART shift register */
+		while (!(USART1->SR & USART_SR_TC)) {
+		}
 
-    HAL_PWR_PVDCallback();
+		NVIC_SystemReset();
+	}
 }
