@@ -46,6 +46,7 @@ import argparse
 import sys
 import os
 import re
+import zlib
 
 try:
     import win32com.client
@@ -1291,12 +1292,259 @@ class PVDTest:
         
         print(f"[INFO] Report saved to: {output_file}")
 
+class OTATest(PVDTest):
+    """OTA模拟升级测试：验证A/B分区切换与CRC32校验逻辑。
+
+    测试内容（模拟完整OTA升级流程）：
+      1. 初始状态查询（Active slot / State）
+      2. 错误CRC32流程：begin(错误crc)→write→end 必须返回 ERR_CRC
+      3. 正确CRC32流程：begin(正确crc)→write分片→end OK→activate OK
+      4. 分区切换验证：activate 后 Target slot 必须为 Active 的对侧
+      5. rollback：强制清除 pending，返回 OK
+      6. 二次完整升级流程（验证可重复升级）
+      7. reset 后参数区持久性：重启后 Active slot 保持不变
+      8. confirm：确认当前固件，返回 OK
+
+    说明：
+      - 模拟固件为PC端生成的768字节伪随机数据（8块×96字节，CLI输入
+        缓冲256字节限制下每块最大约120字节）
+      - CRC32 使用 zlib.crc32（IEEE 802.3，与固件 ota_crc32 完全一致）
+      - 真实A/B引导切换需 Bootloader 配合，本测试验证 App 侧状态机与
+        参数区写入逻辑
+    """
+
+    OTA_BLOCK_SIZE = 96      # 每块数据字节数
+    OTA_FW_SIZE = 768        # 模拟固件大小（8块）
+    OTA_FW_VERSION = 2       # 模拟固件版本号
+
+    def __init__(self, port, baud=115200, timeout=5):
+        super().__init__(port, baud, timeout)
+        self.firmware = None
+        self.fw_crc = 0
+
+    def _build_firmware(self):
+        """生成伪随机但可复现的模拟固件，并计算CRC32。"""
+        random.seed(42)
+        self.firmware = bytes(random.randint(0, 255) for _ in range(self.OTA_FW_SIZE))
+        self.fw_crc = zlib.crc32(self.firmware) & 0xFFFFFFFF
+        print(f"[INFO] Simulated firmware: {self.OTA_FW_SIZE} bytes, CRC32=0x{self.fw_crc:08X}")
+
+    def _cmd(self, cmd, duration=5):
+        """发送命令并收集输出，返回拼接文本。"""
+        baseline = len(self.received_lines)
+        self.send_command(cmd)
+        self.read_all(duration=duration)
+        lines = [line[1] for line in self.received_lines[baseline:]]
+        return '\n'.join(lines)
+
+    def _parse_slot(self, text, label):
+        m = re.search(rf'{label}\s*:\s*([AB])', text)
+        return m.group(1) if m else None
+
+    def _parse_state(self, text):
+        m = re.search(r'State:\s*(\w+)', text)
+        return m.group(1) if m else None
+
+    def _ota_write_all(self):
+        """分片写入全部固件，返回是否全部成功。"""
+        ok = True
+        for off in range(0, self.OTA_FW_SIZE, self.OTA_BLOCK_SIZE):
+            chunk = self.firmware[off:off + self.OTA_BLOCK_SIZE]
+            hexstr = chunk.hex()
+            text = self._cmd(f'ota write {off} {hexstr}', 5)
+            if 'OK' not in text:
+                print(f"  [FAIL] ota write @{off} failed: {text[:80]}")
+                ok = False
+        return ok
+
+    def _ota_upgrade(self, crc32, label):
+        """执行一次完整升级（begin→write全部→end→activate）。"""
+        text = self._cmd(f'ota begin {self.OTA_FW_SIZE} {crc32:x} {self.OTA_FW_VERSION}', 30)
+        begin_ok = 'OK' in text
+        print(f"  [{'OK' if begin_ok else 'FAIL'}] {label} begin: {'OK' if begin_ok else text[:60]}")
+
+        write_ok = self._ota_write_all()
+        print(f"  [{'OK' if write_ok else 'FAIL'}] {label} write all blocks")
+
+        text = self._cmd('ota end', 8)
+        end_ok = 'OK' in text
+        print(f"  [{'OK' if end_ok else 'FAIL'}] {label} end (CRC32 verify): {'OK' if end_ok else text[:60]}")
+
+        text = self._cmd('ota activate', 5)
+        act_ok = 'OK' in text
+        print(f"  [{'OK' if act_ok else 'FAIL'}] {label} activate: {'OK' if act_ok else text[:60]}")
+
+        return begin_ok and write_ok and end_ok and act_ok
+
+    def run_test(self):
+        print("\n" + "=" * 60)
+        print("OTA Simulated Upgrade Test")
+        print("=" * 60)
+        print(f"[INFO] Port: {self.port}, Baud: {self.baud}")
+        print("[HINT] 如需观察OTA关键步骤日志，请先执行 'log level i'")
+
+        if not self.check_port_available():
+            print("[ERROR] Port not available, exiting")
+            return False
+
+        if not self.connect():
+            return False
+
+        self.ser.write(b'\r\n')
+        if not self.wait_for_prompt(timeout=10):
+            print("[ERROR] No prompt received. Check if firmware is running.")
+            self.disconnect()
+            return False
+        print("[OK] Prompt detected")
+
+        # --- 准备模拟固件 ---
+        self._build_firmware()
+
+        results = {}
+
+        # --- T1: 初始状态 ---
+        print("\n--- T1: Initial OTA status ---")
+        text = self._cmd('ota', 3)
+        active1 = self._parse_slot(text, 'Active slot')
+        state1 = self._parse_state(text)
+        print(f"  [INFO] Active slot: {active1}, State: {state1}")
+        results['initial_status'] = (active1 in ('A', 'B')) and state1 == 'IDLE'
+
+        # --- T2: 错误CRC32必须被拒绝 ---
+        print("\n--- T2: Wrong CRC32 must be rejected ---")
+        bad_crc = (self.fw_crc ^ 0xFFFFFFFF) & 0xFFFFFFFF
+        self._cmd(f'ota begin {self.OTA_FW_SIZE} {bad_crc:x} {self.OTA_FW_VERSION}', 30)
+        self._ota_write_all()
+        text = self._cmd('ota end', 8)
+        results['wrong_crc_rejected'] = 'ERR_CRC' in text
+        print(f"  [{'OK' if results['wrong_crc_rejected'] else 'FAIL'}] end with wrong CRC: "
+              f"{'ERR_CRC as expected' if results['wrong_crc_rejected'] else text[:60]}")
+
+        # --- T3: 正确CRC32完整升级流程 ---
+        print("\n--- T3: Correct CRC32 full upgrade flow ---")
+        results['upgrade1'] = self._ota_upgrade(self.fw_crc, 'Upgrade#1')
+
+        # --- T4: 分区切换验证（target必须为active对侧） ---
+        print("\n--- T4: A/B slot switching verification ---")
+        text = self._cmd('ota', 3)
+        target1 = self._parse_slot(text, 'Target slot')
+        active_after = self._parse_slot(text, 'Active slot')
+        state_after = self._parse_state(text)
+        print(f"  [INFO] Active slot: {active_after}, Target slot: {target1}, State: {state_after}")
+        results['slot_switch'] = (target1 in ('A', 'B')) and (target1 != active1) and (state_after == 'IDLE')
+        print(f"  [{'OK' if results['slot_switch'] else 'FAIL'}] Target != Active (A/B switch): "
+              f"{'target=' + str(target1) + ' active=' + str(active1) if results['slot_switch'] else 'CHECK'}")
+
+        # --- T5: rollback ---
+        print("\n--- T5: Rollback ---")
+        text = self._cmd('ota rollback', 5)
+        results['rollback'] = 'OK' in text
+        print(f"  [{'OK' if results['rollback'] else 'FAIL'}] rollback: "
+              f"{'OK' if results['rollback'] else text[:60]}")
+
+        # --- T6: 二次完整升级（可重复性） ---
+        print("\n--- T6: Repeat upgrade flow ---")
+        results['upgrade2'] = self._ota_upgrade(self.fw_crc, 'Upgrade#2')
+        text = self._cmd('ota', 3)
+        target2 = self._parse_slot(text, 'Target slot')
+        results['repeatable'] = (target2 is not None) and (target2 != active1)
+        print(f"  [{'OK' if results['repeatable'] else 'FAIL'}] repeat upgrade target: {target2}")
+
+        # --- T7: reset后参数区持久性 ---
+        print("\n--- T7: Param persistence after reset ---")
+        self.send_command('reset')
+        time.sleep(1)
+        if self.wait_for_reboot(max_wait=60):
+            text = self._cmd('ota', 3)
+            active_persist = self._parse_slot(text, 'Active slot')
+            results['param_persist'] = (active_persist == active1)
+            print(f"  [{'OK' if results['param_persist'] else 'FAIL'}] active slot after reset: "
+                  f"{active_persist} (was {active1})")
+        else:
+            results['param_persist'] = False
+            print("  [FAIL] system did not reboot")
+
+        # --- T8: confirm ---
+        print("\n--- T8: Confirm current firmware ---")
+        text = self._cmd('ota confirm', 5)
+        results['confirm'] = 'OK' in text
+        print(f"  [{'OK' if results['confirm'] else 'FAIL'}] confirm: "
+              f"{'OK' if results['confirm'] else text[:60]}")
+
+        self.disconnect()
+        self.last_results = results
+        return self.print_results(results)
+
+    def print_results(self, results):
+        print("\n" + "=" * 60)
+        print("OTA TEST RESULTS")
+        print("=" * 60)
+
+        passed = 0
+        for key, ok in results.items():
+            status = "[OK]" if ok else "[FAIL]"
+            print(f"  {status} {key}")
+            if ok:
+                passed += 1
+
+        print(f"\nPassed: {passed}/{len(results)}")
+
+        if passed == len(results):
+            print("\n[PASS] All OTA checks passed")
+            return True
+        else:
+            print("\n[FAIL] Some OTA checks failed - inspect logs above")
+            return False
+
+    def generate_report(self, output_file='test_report.md'):
+        report = []
+        report.append("# STM32 OTA Test Report")
+        report.append("")
+        report.append("## Test Configuration")
+        report.append(f"- **Test Date**: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append(f"- **Port**: {self.port}")
+        report.append(f"- **Baud Rate**: {self.baud}")
+        report.append(f"- **Simulated Firmware**: {self.OTA_FW_SIZE} bytes (CRC32 0x{self.fw_crc:08X}, v{self.OTA_FW_VERSION})")
+        report.append("")
+        report.append("## Test Checks")
+        report.append("")
+        report.append("| Check | Result |")
+        report.append("|-------|--------|")
+
+        for key, ok in self.last_results.items():
+            status = "✅" if ok else "❌"
+            report.append(f"| {key} | {status} |")
+
+        report.append("")
+        if all(self.last_results.values()):
+            report.append("**RESULT: PASS** - A/B switch and CRC32 verification logic confirmed")
+        else:
+            report.append("**RESULT: FAIL** - Some checks failed, inspect serial logs")
+        report.append("")
+
+        report.append("## Notes")
+        report.append("")
+        report.append("- Real A/B boot switching requires the Bootloader to be deployed")
+        report.append("- Param persistence verified via reset/reconnect")
+        report.append("- CRC32 algorithm: IEEE 802.3 (matches firmware ota_crc32)")
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(report))
+        print(f"[INFO] Report saved to: {output_file}")
+
+    def run_test_with_report(self, output_file):
+        self.last_results = {}
+        success = self.run_test()
+        if success:
+            self.generate_report(output_file)
+        return success
+
 def main():
     parser = argparse.ArgumentParser(description='STM32 Comprehensive Test Suite')
     parser.add_argument('-p', '--port', default='COM3', help='Serial port (default: COM3)')
     parser.add_argument('-b', '--baud', type=int, default=115200, help='Baud rate (default: 115200)')
     parser.add_argument('-m', '--mode', default='all', 
-                        choices=['all', 'functional', 'stress', 'concurrent', 'buffer', 'reliability', 'pvd', 'logtail', 'logtail-perf', 'logtail-stress', 'top', 'clr'],
+                        choices=['all', 'functional', 'stress', 'concurrent', 'buffer', 'reliability', 'pvd', 'logtail', 'logtail-perf', 'logtail-stress', 'top', 'clr', 'ota'],
                         help='Test mode')
     parser.add_argument('-d', '--duration', type=int, default=300, help='Test duration in seconds')
     parser.add_argument('-t', '--threads', type=int, default=4, help='Number of concurrent threads')
@@ -1319,6 +1567,10 @@ def main():
         tester = PVDTest(args.port, args.baud, args.duration)
         success = tester.run_test()
         tester.generate_report(args.output)
+        sys.exit(0 if success else 1)
+    elif args.mode == 'ota':
+        tester = OTATest(args.port, args.baud, args.duration)
+        success = tester.run_test_with_report(args.output)
         sys.exit(0 if success else 1)
     else:
         tester = CLITestSuite(port=args.port, baud=args.baud)

@@ -53,6 +53,7 @@
 #include "uart_ringbuf.h"
 #include "pvd_detection.h"
 #include "sfud.h"
+#include "ota_core.h"
 
 /* Auto-detect CPU model from compile-time macro. */
 #if defined(STM32F407xx)
@@ -143,6 +144,7 @@ static BaseType_t prvResetCommand(char *pcWriteBuffer, size_t xWriteBufferLen, c
 static BaseType_t prvStatsCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvResourceCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvPvdCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+static BaseType_t prvOtaCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvShellCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 static BaseType_t prvClearCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
 
@@ -262,6 +264,20 @@ static const CLI_Command_Definition_t xPvdCommand = {
     "pvd",
     "\r\npvd status:\r\n status - show PVD status\r\n",
     prvPvdCommand,
+    -1
+};
+
+static const CLI_Command_Definition_t xOtaCommand = {
+    "ota",
+    "\r\nota:\r\n"
+    " ota                          - show OTA status\r\n"
+    " ota begin <size> <crc32> <ver> - erase inactive slot, start download\r\n"
+    " ota write <offset> <hex>    - write chunk (offset decimal, hex data)\r\n"
+    " ota end                      - verify CRC32 of downloaded firmware\r\n"
+    " ota activate                 - set boot flag to new firmware\r\n"
+    " ota rollback                 - force boot back to current slot\r\n"
+    " ota confirm                  - confirm current firmware OK\r\n",
+    prvOtaCommand,
     -1
 };
 
@@ -403,6 +419,7 @@ void vRegisterSampleCLICommands( void )
     FreeRTOS_CLIRegisterCommand( &xResetCommand );
     FreeRTOS_CLIRegisterCommand( &xStatsCommand );
     FreeRTOS_CLIRegisterCommand( &xPvdCommand );
+    FreeRTOS_CLIRegisterCommand( &xOtaCommand );
     FreeRTOS_CLIRegisterCommand( &xShellCommand );
     FreeRTOS_CLIRegisterCommand( &xResourceCommand );
     FreeRTOS_CLIRegisterCommand( &xClearCommand );
@@ -1537,6 +1554,165 @@ static BaseType_t prvPvdCommand(char *pcWriteBuffer, size_t xWriteBufferLen, con
         }
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nUnknown PVD command. Use 'pvd status'\r\n");
+    }
+
+    pcWriteBuffer[xWriteBufferLen - 1] = '\0';
+    return pdFALSE;
+}
+/*-----------------------------------------------------------*/
+
+/* CLI hex数据解析缓冲（静态，避免栈占用） */
+static uint8_t s_ota_cli_buf[128];
+
+static const char *ota_err_str(int ret)
+{
+    switch (ret) {
+        case OTA_ERR_OK:         return "OK";
+        case OTA_ERR_PARAM:      return "ERR_PARAM";
+        case OTA_ERR_FLASH:      return "ERR_FLASH";
+        case OTA_ERR_POWER_FAIL: return "ERR_POWER_FAIL";
+        case OTA_ERR_TIMEOUT:    return "ERR_TIMEOUT";
+        case OTA_ERR_STATE:      return "ERR_STATE";
+        case OTA_ERR_CRC:        return "ERR_CRC";
+        case OTA_ERR_SIZE:       return "ERR_SIZE";
+        default:                 return "ERR_UNKNOWN";
+    }
+}
+
+/* 输出OTA命令用法说明 */
+static void ota_print_usage(char *buf, size_t len)
+{
+    snprintf(buf, len,
+             "\r\nUsage:\r\n"
+             " ota\r\n"
+             " ota begin <size> <crc32hex> <version>\r\n"
+             " ota write <offset> <hexdata>\r\n"
+             " ota end\r\n"
+             " ota activate\r\n"
+             " ota rollback\r\n"
+             " ota confirm\r\n");
+}
+
+static BaseType_t prvOtaCommand(char *pcWriteBuffer, size_t xWriteBufferLen,
+                                const char *pcCommandString)
+{
+    const char *pcParameter;
+    BaseType_t xParameterStringLength;
+    int ret;
+
+    /* 无参数：显示OTA状态 */
+    pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 1, &xParameterStringLength);
+    if (pcParameter == NULL) {
+        ota_get_status_string(pcWriteBuffer, xWriteBufferLen);
+        pcWriteBuffer[xWriteBufferLen - 1] = '\0';
+        return pdFALSE;
+    }
+
+    if (strncmp(pcParameter, "begin", (size_t)xParameterStringLength) == 0 &&
+        (size_t)xParameterStringLength == 5) {
+        unsigned long size = 0ul;
+        unsigned long crc = 0ul;
+        unsigned long ver = 0ul;
+        int valid_args = 1;
+
+        /* 依次解析3个参数，任一缺失则整条命令无效 */
+        pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 2, &xParameterStringLength);
+        if (pcParameter == NULL) {
+            valid_args = 0;
+        } else {
+            size = strtoul(pcParameter, NULL, 10);
+        }
+
+        if (valid_args != 0) {
+            pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 3, &xParameterStringLength);
+            if (pcParameter == NULL) {
+                valid_args = 0;
+            } else {
+                crc = strtoul(pcParameter, NULL, 16);
+            }
+        }
+
+        if (valid_args != 0) {
+            pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 4, &xParameterStringLength);
+            if (pcParameter == NULL) {
+                valid_args = 0;
+            } else {
+                ver = strtoul(pcParameter, NULL, 10);
+            }
+        }
+
+        if (valid_args != 0) {
+            ret = ota_cli_begin((uint32_t)size, (uint32_t)crc, (uint32_t)ver);
+            snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nOTA begin: %s\r\n", ota_err_str(ret));
+        } else {
+            ota_print_usage(pcWriteBuffer, xWriteBufferLen);
+        }
+    } else if (strncmp(pcParameter, "write", (size_t)xParameterStringLength) == 0 &&
+               (size_t)xParameterStringLength == 5) {
+        unsigned long offset = 0ul;
+        const char *pcHex = NULL;
+        BaseType_t xHexLen = 0;
+        size_t n = 0;
+        int valid_args = 1;
+
+        pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 2, &xParameterStringLength);
+        if (pcParameter == NULL) {
+            valid_args = 0;
+        } else {
+            offset = strtoul(pcParameter, NULL, 10);
+        }
+
+        if (valid_args != 0) {
+            pcParameter = FreeRTOS_CLIGetParameter(pcCommandString, 3, &xParameterStringLength);
+            if (pcParameter == NULL) {
+                valid_args = 0;
+            } else {
+                pcHex = pcParameter;
+                xHexLen = xParameterStringLength;
+            }
+        }
+
+        if (valid_args != 0) {
+            /* hex字符串 → 字节数组（每2字符1字节） */
+            while ((size_t)xHexLen >= 2u && n < sizeof(s_ota_cli_buf)) {
+                char tmp[3];
+                tmp[0] = pcHex[0];
+                tmp[1] = pcHex[1];
+                tmp[2] = '\0';
+                s_ota_cli_buf[n++] = (uint8_t)strtoul(tmp, NULL, 16);
+                pcHex += 2;
+                xHexLen -= 2;
+            }
+            if (n == 0u) {
+                valid_args = 0;
+            }
+        }
+
+        if (valid_args != 0) {
+            ret = ota_cli_write((uint32_t)offset, s_ota_cli_buf, (uint16_t)n);
+            snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nOTA write %u bytes @%lu: %s\r\n",
+                     (unsigned)n, offset, ota_err_str(ret));
+        } else {
+            ota_print_usage(pcWriteBuffer, xWriteBufferLen);
+        }
+    } else if (strncmp(pcParameter, "end", (size_t)xParameterStringLength) == 0 &&
+               (size_t)xParameterStringLength == 3) {
+        ret = ota_cli_end();
+        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nOTA end: %s\r\n", ota_err_str(ret));
+    } else if (strncmp(pcParameter, "activate", (size_t)xParameterStringLength) == 0 &&
+               (size_t)xParameterStringLength == 8) {
+        ret = ota_cli_activate();
+        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nOTA activate: %s (reboot to apply)\r\n", ota_err_str(ret));
+    } else if (strncmp(pcParameter, "rollback", (size_t)xParameterStringLength) == 0 &&
+               (size_t)xParameterStringLength == 8) {
+        ret = ota_cli_rollback();
+        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nOTA rollback: %s\r\n", ota_err_str(ret));
+    } else if (strncmp(pcParameter, "confirm", (size_t)xParameterStringLength) == 0 &&
+               (size_t)xParameterStringLength == 7) {
+        ret = ota_cli_confirm();
+        snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nOTA confirm: %s\r\n", ota_err_str(ret));
+    } else {
+        ota_print_usage(pcWriteBuffer, xWriteBufferLen);
     }
 
     pcWriteBuffer[xWriteBufferLen - 1] = '\0';

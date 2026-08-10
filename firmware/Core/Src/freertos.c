@@ -34,6 +34,7 @@
 #include "pvd_detection.h"
 #include "uart_ringbuf.h"
 #include "serial.h"
+#include "ota_core.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -212,6 +213,10 @@ void StartMyTask(void *argument)
      * polls the UART, so a PVD event handled by myTask must never wait
      * for the CLI to yield. */
     vUARTCommandConsoleStart(1024, osPriorityIdle);
+
+    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令） */
+    ota_init();
+    ota_task_start();
 
     /* Infinite loop */
     for (;;) {
