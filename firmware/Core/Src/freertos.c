@@ -35,6 +35,7 @@
 #include "uart_ringbuf.h"
 #include "serial.h"
 #include "ota_core.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -134,6 +135,7 @@ void StartMyTask(void *argument);
 
 void StartDefaultTask(void *argument);
 
+extern void MX_LWIP_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /**
@@ -186,6 +188,8 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  /* init code for LWIP */
+  MX_LWIP_Init();
   /* USER CODE BEGIN StartDefaultTask */
   /* Infinite loop */
   for(;;)
@@ -214,10 +218,11 @@ void StartMyTask(void *argument)
      * for the CLI to yield. */
     vUARTCommandConsoleStart(1024, osPriorityIdle);
 
-    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令） */
+    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令�??????? */
     ota_init();
     ota_task_start();
 
+//    MX_LWIP_Init();
     /* Infinite loop */
     for (;;) {
 
