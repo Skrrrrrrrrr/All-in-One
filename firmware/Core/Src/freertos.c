@@ -218,11 +218,10 @@ void StartMyTask(void *argument)
      * for the CLI to yield. */
     vUARTCommandConsoleStart(1024, osPriorityIdle);
 
-    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令�??????? */
+    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令�?????????? */
     ota_init();
     ota_task_start();
 
-//    MX_LWIP_Init();
     /* Infinite loop */
     for (;;) {
 

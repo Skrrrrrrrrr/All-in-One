@@ -36,7 +36,8 @@
 /* enable assert check */
 #define ELOG_ASSERT_ENABLE
 /* buffer size for every line's log */
-#define ELOG_LINE_BUF_SIZE                       1024
+/* 系统日志单行通常 < 200 字符，512 足够；1024 -> 512 节省 512B RAM（当前 RAM 紧张） */
+#define ELOG_LINE_BUF_SIZE                       512
 /* output line number max length */
 #define ELOG_LINE_NUM_MAX_LEN                    5
 /* output filter's tag max length */
@@ -69,7 +70,8 @@
 /* the highest output level for async mode, other level will sync output */
 #define ELOG_ASYNC_OUTPUT_LVL                    ELOG_LVL_VERBOSE
 /* buffer size for asynchronous output mode */
-#define ELOG_ASYNC_OUTPUT_BUF_SIZE               (ELOG_LINE_BUF_SIZE * 10)
+/* 10KB -> 4KB（512x8）：环形缓冲按实际日志吞吐评估，缩小以释放 RAM 给 LwIP */
+#define ELOG_ASYNC_OUTPUT_BUF_SIZE               (ELOG_LINE_BUF_SIZE * 8)
 /* each asynchronous output's log which must end with newline sign */
 #define ELOG_ASYNC_LINE_OUTPUT
 /* asynchronous output mode using POSIX pthread implementation */
@@ -78,9 +80,17 @@
 #define ELOG_USING_FREERTOS_PTHREAD
 /*---------------------------------------------------------------------------*/
 /* enable buffered output mode */
-#define ELOG_BUF_OUTPUT_ENABLE
+/* ============================================================
+ * 注意：缓冲输出模式已通过条件编译禁用（勿直接在源码中改回）。
+ * 原因：buf 模式与异步模式（ELOG_ASYNC_OUTPUT_ENABLE）互斥，
+ * elog.c 中启用 async 时 buf 模式的 10KB 静态缓冲从未使用却仍占 RAM。
+ * 禁用后 elog_buf.c 由 #ifdef ELOG_BUF_OUTPUT_ENABLE 整体裁掉，
+ * 释放 10KB RAM（当前 RAM 紧张，需为 LwIP 腾空间）。
+ * 如需恢复，取消下面注释并同时关闭 ELOG_ASYNC_OUTPUT_ENABLE。
+ * ============================================================ */
+/* #define ELOG_BUF_OUTPUT_ENABLE */
 /* buffer size for buffered output mode */
-#define ELOG_BUF_OUTPUT_BUF_SIZE                 (ELOG_LINE_BUF_SIZE * 10)
+#define ELOG_BUF_OUTPUT_BUF_SIZE                 (ELOG_LINE_BUF_SIZE * 8)
 /*---------------------------------------------------------------------------*/
 /* enable file log plugin */
 #define ELOG_FILE_ENABLE

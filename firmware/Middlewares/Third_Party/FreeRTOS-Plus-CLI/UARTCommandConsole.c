@@ -40,8 +40,8 @@
 #include "serial.h"
 #include "uart_ringbuf.h"
 
-#define cmdMAX_INPUT_SIZE          256
-#define cmdHISTORY_SIZE            10
+#define cmdMAX_INPUT_SIZE          64
+#define cmdHISTORY_SIZE            5
 #define cmdQUEUE_LENGTH            512
 #define cmdASCII_DEL               ( 0x7F )
 #define cmdMAX_MUTEX_WAIT          pdMS_TO_TICKS( 300 )

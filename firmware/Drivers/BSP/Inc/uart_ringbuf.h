@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include "stm32f4xx_hal.h"
 
-#define UART_RB_SIZE 16384
+#define UART_RB_SIZE (16384>>1)
 
 typedef struct {
     uint32_t total_written;

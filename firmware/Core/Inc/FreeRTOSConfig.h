@@ -71,7 +71,7 @@
 #define configTICK_RATE_HZ                       ((TickType_t)1000)
 #define configMAX_PRIORITIES                     ( 56 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)0x8000)
+#define configTOTAL_HEAP_SIZE                    ((size_t)0x7000)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1
 #define configUSE_16_BIT_TICKS                   0
@@ -175,7 +175,7 @@ standard names. */
 #define INCLUDE_vTaskList                    1
 #define INCLUDE_vTaskGetRunTimeStats         1
 #define configUSE_STATS_FORMATTING_FUNCTIONS     1
-
+//#define configCHECK_FOR_STACK_OVERFLOW 2
 /* Enable run-time stats using DWT CYCCNT (Cortex-M4 built-in, no timer needed).
  * Note: CYCCNT runs at CPU clock (168MHz), 32-bit counter overflows in ~25s.
  * The 'top' CLI command uses reset-and-sample mode (500ms window) to avoid overflow. */
