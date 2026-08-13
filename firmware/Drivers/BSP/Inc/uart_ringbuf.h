@@ -22,6 +22,8 @@ typedef struct {
 } uart_rb_context_t;
 
 int uart_rb_register(UART_HandleTypeDef *huart);
+int uart_rb_is_ready(void);              /* 返回串口 TX 通道是否已注册（huart 非空） */
+void vUartRbPrintf(const char *fmt, ...);
 const uart_rb_context_t *uart_rb_get_context(void);
 void uart_rb_init(void);
 size_t uart_rb_write(const uint8_t *data, size_t len);

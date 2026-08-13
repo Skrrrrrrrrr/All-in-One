@@ -157,7 +157,16 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 /* Normal assert() semantics without relying on the provision of an assert.h
 header file. */
 /* USER CODE BEGIN 1 */
-#define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* 断言失败时输出断�?位置（文�?:行号），用于快�?�定位是哪个 FreeRTOS
+ * API 违反使用条件（如 ISR 中调用非 FromISR 接口、临界区内调用阻�? API）�??
+ * 打印�? prvAssertFailPrint（freertos.c USER CODE 段）实现：USART1 寄存�?
+ * 轮询，任何上下文（含 ISR）均安全；随后关闭中断挂起�?? */
+extern void prvAssertFailPrint(const char *file, int line);
+
+#define configASSERT( x ) if ((x) == 0) { \
+    prvAssertFailPrint(__FILE__, __LINE__); \
+    taskDISABLE_INTERRUPTS(); \
+    for (;;) {} }
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS
@@ -176,6 +185,14 @@ standard names. */
 #define INCLUDE_vTaskGetRunTimeStats         1
 #define configUSE_STATS_FORMATTING_FUNCTIONS     1
 //#define configCHECK_FOR_STACK_OVERFLOW 2
+/* 栈溢出检测（方法2）：每次上下文切换时校验任务栈指针范围，并检查任�?
+ * 栈顶 canary 是否被覆盖，可捕获较深的调用链溢出�?�触发后�?
+ * vApplicationStackOverflowHook（freertos.c USER CODE 段）输出肇事任务名，
+ * 用于区分"栈溢出死�?"�?"其它原因死机"�? */
+#define configCHECK_FOR_STACK_OVERFLOW 2
+/* malloc 失败钩子：pvPortMalloc 分配失败时由 vApplicationMallocFailedHook
+ * 输出标记，用于定�?"堆�?�尽"类死机�?? */
+#define configUSE_MALLOC_FAILED_HOOK 1
 /* Enable run-time stats using DWT CYCCNT (Cortex-M4 built-in, no timer needed).
  * Note: CYCCNT runs at CPU clock (168MHz), 32-bit counter overflows in ~25s.
  * The 'top' CLI command uses reset-and-sample mode (500ms window) to avoid overflow. */
@@ -186,6 +203,13 @@ standard names. */
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk; \
 } while(0)
 #define portGET_RUN_TIME_COUNTER_VALUE() (DWT->CYCCNT)
+/* FreeRTOS 堆大小：CubeMX 生成�? 0x7000(28KB) 装不下全部任务栈
+ * （CLI 8KB + tcpip_thread 4KB + EthIf 1KB + EthLink 2KB + myTask 4KB
+ *  + 定时�?/空闲任务 + 各队�?/mbox �? 24KB），启动创建 LwIP 线程�?
+ * pvPortMalloc 失败，表现为 [FATAL] malloc failed!�?
+ * 统一调整�? 32KB，在 USER CODE 段覆盖生成�?�（不改生成区）�? */
+#undef  configTOTAL_HEAP_SIZE
+#define configTOTAL_HEAP_SIZE ((size_t)32768)
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

@@ -40,8 +40,13 @@
 /* The time to block waiting for input. */
 #define TIME_WAITING_FOR_INPUT ( portMAX_DELAY )
 /* USER CODE BEGIN OS_THREAD_STACK_SIZE_WITH_RTOS */
-/* Stack size of the interface thread */
-#define INTERFACE_THREAD_STACK_SIZE ( 350 )
+/* Stack size of the interface thread
+ * 单位陷阱：osThreadNew �? stack_size 单位为�?�字节�?�（cmsis_os2.c 内部
+ * /= sizeof(StackType_t) 转成 word）�?�CubeMX 默认 350 实际只有 350B(87 words)�?
+ * EthIf 线程执行 ethernetif_input �? low_level_input �? HAL_ETH_ReadData �?
+ * netif->input(tcpip_input) 调用链，调试�? -O0 �? 350B 极易栈溢出并破坏
+ * 相邻内存，表现为随机断言/死机。增大到 1024 字节(256 words)�? */
+#define INTERFACE_THREAD_STACK_SIZE ( 1024 )
 /* USER CODE END OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Network interface name */
 #define IFNAME0 's'
@@ -251,6 +256,19 @@ static void low_level_init(struct netif *netif)
 
   /* create the task that handles the ETH_MAC */
 /* USER CODE BEGIN OS_THREAD_NEW_CMSIS_RTOS_V2 */
+  /* 修正 CubeMX 生成代码的信号量语义错误（受"不改生成代码"约束，在�?
+   * USER CODE 段排空初始计数）�?
+   * RxPktSemaphore/TxPktSemaphore 应由 ETH 中断释放、初始计数应�? 0�?
+   * 生成代码误用 osSemaphoreNew(1,1) 会导致：
+   *   - Tx 方向：low_level_output �? HAL_ETH_Transmit_IT 后立即�?�过
+   *     acquire(count 1->0) 成功返回，随�? HAL_ETH_ReleaseTxPacket 提前
+   *     释放尚在 DMA 传输的描述符�? pbuf 内存，产生内存竞争；
+   *   - Rx 方向：ethernetif_input 空转�?次（读回 NULL）�??
+   * 此处把多余计数排空为 0，使后续行为符合"由中断释�?"的设计�??
+   * 排空�? HAL_ETH_Start_IT 之前完成，不存在丢失唤醒的竞争�?? */
+  if (RxPktSemaphore != NULL) { osSemaphoreAcquire(RxPktSemaphore, 0); }
+  if (TxPktSemaphore != NULL) { osSemaphoreAcquire(TxPktSemaphore, 0); }
+
   memset(&attributes, 0x0, sizeof(osThreadAttr_t));
   attributes.name = "EthIf";
   attributes.stack_size = INTERFACE_THREAD_STACK_SIZE;

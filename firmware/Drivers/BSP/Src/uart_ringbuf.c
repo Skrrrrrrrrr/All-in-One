@@ -3,6 +3,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 static uint8_t uart_rb[UART_RB_SIZE];
 static volatile uint32_t rb_head = 0;
@@ -24,6 +26,13 @@ int uart_rb_register(UART_HandleTypeDef *huart)
     }
     s_context.huart = huart;
     return 0;
+}
+
+/* 返回串口 TX 通道是否已注册：供依赖方（如 LwIP 初始化守卫）判断
+ * uart_rb 输出通道是否可用，避免在通道就绪前触发串口输出或错误初始化。 */
+int uart_rb_is_ready(void)
+{
+    return (s_context.huart != NULL) ? 1 : 0;
 }
 
 const uart_rb_context_t *uart_rb_get_context(void)
@@ -103,6 +112,35 @@ size_t uart_rb_write(const uint8_t *data, size_t len)
     uart_rb_start_dma();
 
     return written;
+}
+
+/* LwIP 平台诊断宏（LWIP_PLATFORM_DIAG）的重定向目标：
+ * LwIP 传入的是“完整带括号的 printf 参数列表”，无法在宏内用 vsnprintf 直接
+ * 消费，故统一收敛为可变参数函数：先格式化到栈上临时缓冲，再经环形缓冲 +
+ * DMA 输出（ISR/任意线程上下文均安全，不会因 printf 未被重定向而丢失）。 */
+void vUartRbPrintf(const char *fmt, ...)
+{
+    char buf[160];
+    int n;
+    va_list ap;
+
+    if (fmt == NULL) {
+        return;
+    }
+
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    /* vsnprintf 返回“所需长度”（可能超过缓冲）；缓冲内实际有效字符
+     * 最多 sizeof(buf)-1（尾部为 NUL），此处截断避免把 NUL 字符发出去。 */
+    if (n > (int)sizeof(buf) - 1) {
+        n = (int)sizeof(buf) - 1;
+    }
+
+    if (n > 0) {
+        uart_rb_write((const uint8_t *)buf, (size_t)n);
+    }
 }
 
 static volatile uint32_t rb_dma_start_tail = 0;

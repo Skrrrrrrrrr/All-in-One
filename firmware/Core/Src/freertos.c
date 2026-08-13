@@ -28,13 +28,18 @@
 #include "usart.h"
 #include "dma.h"
 #include "spi.h"
-#include "bsp_init.h"
-#include "elog.h"
-#include "elog_file.h"
-#include "pvd_detection.h"
+#include "FreeRTOS_CLI.h"
 #include "uart_ringbuf.h"
 #include "serial.h"
-#include "ota_core.h"
+#include "lwip_test_cmds.h"
+#include <string.h>          /* strlen()：栈溢出钩子中打印任务名 */
+//#include "bsp_init.h"
+//#include "elog.h"
+//#include "elog_file.h"
+//#include "pvd_detection.h"
+//#include "uart_ringbuf.h"
+//#include "serial.h"
+//#include "ota_core.h"
 
 /* USER CODE END Includes */
 
@@ -59,7 +64,13 @@
 osThreadId_t myTaskHandle;
 const osThreadAttr_t myTask_attributes = {
   .name = "myTask",
-  .stack_size = 3072 * 4,
+  /* �???? 4096 字节(1K words)�????
+   * myTask 在本 LwIP 测试版中内联执行 MX_LWIP_Init()，调用链
+   *  StartMyTask→MX_LWIP_Init→netif_add→ethernetif_init→low_level_init
+   *  →HAL_ETH_Init/DP83848_Init�????-O0 下峰值约 1.5KB；且�???? USART1/ETH
+   *  中断抢占�???? ISR 帧复用本任务栈�?�故�???? 4096 而非�???? OTA 版的 2048�????
+   * �???? 3072*4=12KB �???? OTA/PVD 版残留，占用堆过多直接挤�???? 28KB 堆�?? */
+  .stack_size = 4096,
   .priority = (osPriority_t) osPriorityLow,
 };
 
@@ -79,56 +90,103 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+//
+//extern volatile BaseType_t xInUserInputMode;
+//extern volatile uint8_t ucInputIndex;
+//void vSetPromptRefreshNeeded( void );
+//
+//#if defined(__GNUC__)
+//int _write(int fd, char *ptr, int len) {
+//    if (fd == 1 || fd == 2) {
+//        BaseType_t xInInputMode = xInUserInputMode;
+//
+//        if (xInInputMode == pdTRUE) {
+//            uart_rb_write((uint8_t*)"\r", 1);
+//            uint8_t i;
+//            for (i = 0; i < ucInputIndex + 2; i++) {
+//                uart_rb_write((uint8_t*)" ", 1);
+//            }
+//            uart_rb_write((uint8_t*)"\r", 1);
+//        }
+//
+//        uart_rb_write((uint8_t*)ptr, len);
+//
+//        if (xInInputMode == pdTRUE) {
+//            vSetPromptRefreshNeeded();
+//        }
+//
+//        return len;
+//    }
+//    return -1;
+//}
+//#endif
 
-extern volatile BaseType_t xInUserInputMode;
-extern volatile uint8_t ucInputIndex;
-void vSetPromptRefreshNeeded( void );
+/* CCM BSS 段边界符号：由链接脚�????? .ccmram_bss 段定义（NOLOAD，启动代码不处理�????? */
+extern uint8_t _sccmram_bss;
+extern uint8_t _eccmram_bss;
 
-#if defined(__GNUC__)
-int _write(int fd, char *ptr, int len) {
-    if (fd == 1 || fd == 2) {
-        BaseType_t xInInputMode = xInUserInputMode;
+/* 清零 CCM BSS 段（�????? CPU 缓冲：elog/CLI/OTA）�??
+ * 必须在使用任�????? CCM 缓冲之前调用，且先于 UART DMA 接收启动�?????
+ * 避免 RX 中断向未初始化的 cInputString（CCM）写入残留数据�?? */
+static void ccm_bss_clear(void)
+{
+    uint8_t *p = &_sccmram_bss;
+    uint8_t *end = &_eccmram_bss;
 
-        if (xInInputMode == pdTRUE) {
-            uart_rb_write((uint8_t*)"\r", 1);
-            uint8_t i;
-            for (i = 0; i < ucInputIndex + 2; i++) {
-                uart_rb_write((uint8_t*)" ", 1);
-            }
-            uart_rb_write((uint8_t*)"\r", 1);
-        }
-
-        uart_rb_write((uint8_t*)ptr, len);
-
-        if (xInInputMode == pdTRUE) {
-            vSetPromptRefreshNeeded();
-        }
-
-        return len;
+    while (p < end) {
+        *p++ = 0;
     }
-    return -1;
 }
-#endif
+
+/* 复位原因诊断输出（USART1 寄存器轮询）�????
+ * system_pre_init �???? MX_FREERTOS_Init（创建任务�?�启动调度器）之前调用，
+ * 此时 UART DMA / 环形缓冲 / 队列均不可用，故直接轮询 USART1 寄存�????
+ * 输出 RCC->CSR 复位标志。用于区分复位来源（POR/PIN/软件/看门�????/掉电），
+ * 帮助定位"死机-复位"循环（如断言挂死后被人为复位、或 BOR 掉电复位）�?? */
+static void uart_poll_puts(const char *s)
+{
+    if (s == NULL) {
+        return;
+    }
+    while (*s != '\0') {
+        while ((USART1->SR & USART_SR_TXE) == 0U) {}
+        USART1->DR = (uint8_t)*s;
+        s++;
+    }
+}
+
+static void uart_poll_puthex(uint32_t v)
+{
+    static const char hex_digits[] = "0123456789ABCDEF";
+    char tmp[9];
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        tmp[i] = hex_digits[(v >> ((7 - i) * 4)) & 0x0Fu];
+    }
+    tmp[8] = '\0';
+    uart_poll_puts(tmp);
+}
 
 static void system_pre_init(void) {
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_buff, USART_BUFF_SIZE);
-    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
-
     uint32_t reset_flags = RCC->CSR;
-    char reset_reason[128] = "Reset: ";
-    if (reset_flags & RCC_CSR_PORRSTF) strcat(reset_reason, "POR/PDR ");
-    if (reset_flags & RCC_CSR_BORRSTF) strcat(reset_reason, "BOR ");
-    if (reset_flags & RCC_CSR_PINRSTF) strcat(reset_reason, "Pin ");
-    if (reset_flags & RCC_CSR_SFTRSTF) strcat(reset_reason, "Software ");
-    if (reset_flags & RCC_CSR_IWDGRSTF) strcat(reset_reason, "IWDG ");
-    if (reset_flags & RCC_CSR_WWDGRSTF) strcat(reset_reason, "WWDG ");
-    if (reset_flags & RCC_CSR_LPWRRSTF) strcat(reset_reason, "LowPower ");
-    if (reset_flags == 0) strcpy(reset_reason, "Reset: Unknown");
-    RCC->CSR |= RCC_CSR_RMVF;
 
-    char reset_msg[160];
-    sprintf(reset_msg, "%s(CSR=0x%08X)\r\n", reset_reason, (unsigned int)reset_flags);
-    uart_rb_write((uint8_t*)reset_msg, strlen(reset_msg));
+    uart_poll_puts("\r\n[BOOT] RCC_CSR=0x");
+    uart_poll_puthex(reset_flags);
+    uart_poll_puts(" (");
+
+    if (reset_flags & RCC_CSR_LPWRRSTF) uart_poll_puts("LOWPOWER ");
+    if (reset_flags & RCC_CSR_WWDGRSTF) uart_poll_puts("WWDG ");
+    if (reset_flags & RCC_CSR_IWDGRSTF) uart_poll_puts("IWDG ");
+    if (reset_flags & RCC_CSR_SFTRSTF)  uart_poll_puts("SOFTWARE ");
+    if (reset_flags & RCC_CSR_PORRSTF)  uart_poll_puts("POR ");
+    if (reset_flags & RCC_CSR_PINRSTF)  uart_poll_puts("PIN ");
+    if (reset_flags & RCC_CSR_BORRSTF)  uart_poll_puts("BOR ");
+    if (reset_flags == 0)               uart_poll_puts("NONE");
+
+    uart_poll_puts(")\r\n");
+    /* 清除复位标志：保证下�????次复位时读到的是当次真实的复位来�???? */
+    RCC->CSR |= RCC_CSR_RMVF;
 }
 void StartMyTask(void *argument);
 /* USER CODE END FunctionPrototypes */
@@ -189,7 +247,7 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* init code for LWIP */
-  MX_LWIP_Init();
+//  MX_LWIP_Init();
   /* USER CODE BEGIN StartDefaultTask */
   /* Infinite loop */
   for(;;)
@@ -204,23 +262,58 @@ void StartDefaultTask(void *argument)
 /* USER CODE BEGIN Application */
 void StartMyTask(void *argument)
 {
-	int bsp_ret = bsp_init(&huart1, &hspi1);
-	if (bsp_ret != 0) {
-		uart_rb_write((uint8_t*) "BSP init failed!\r\n", sizeof("BSP init failed!\r\n"));
-	}
-    pvd_init();
-    elog_set_filter_lvl(ELOG_LVL_ERROR);
-    pvd_mark_ready();
+    /* ===== LwIP 网络测试模式：仅初始�???? UART 环形缓冲 + CLI 控制�???? ===== */
+    int ret = uart_rb_register(&huart1);
+    if (ret != 0) {
+        /* 串口 TX 通道注册失败：无输出能力，系统停在此处便于调试定�???? */
+        for (;;) {
+            osDelay(1000);
+        }
+    }
+    uart_rb_init();
 
-    vRegisterSampleCLICommands();
-    /* CLI task priority lowered below myTask (osPriorityLow): it only
-     * polls the UART, so a PVD event handled by myTask must never wait
-     * for the CLI to yield. */
-    vUARTCommandConsoleStart(1024, osPriorityIdle);
+    /* 注册 LwIP 测试命令（netinfo/ping/tcp_test/udp_test/lwip_test�????
+     * help �???? FreeRTOS_CLI 内置命令，无�????额外注册�???? */
+    vRegisterLwipTestCommands();
 
-    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令�?????????? */
-    ota_init();
-    ota_task_start();
+    /* 启动 CLI 命令行任务（�????低优先级，仅轮询串口，不干扰协议栈线程）�????
+     * �???? 2048 words(8KB)：命令执行链�???? vsnprintf（调试期 -O0 下栈帧较大）�????
+     * �???? 1024 words �???? LwIP 测试命令（netconn 调用链）下偏紧，易栈溢出�???? */
+    vUARTCommandConsoleStart(2048, osPriorityIdle);
+
+    /* �???? CLI 任务完成 xSerialPortInitMinimal() 创建接收队列后再�????�????
+     * UART RX DMA：避免中断回调向未创建的空队列投递字符触发断�????�???? */
+    osDelay(200);
+
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_buff, USART_BUFF_SIZE);
+    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+
+//	int bsp_ret = bsp_init(&huart1, &hspi1);
+//	if (bsp_ret != 0) {
+//		uart_rb_write((uint8_t*) "BSP init failed!\r\n", sizeof("BSP init failed!\r\n"));
+//	}
+//    pvd_init();
+//    elog_set_filter_lvl(ELOG_LVL_ERROR);
+//    pvd_mark_ready();
+//
+//    vRegisterSampleCLICommands();
+//    /* CLI task priority lowered below myTask (osPriorityLow): it only
+//     * polls the UART, so a PVD event handled by myTask must never wait
+//     * for the CLI to yield. */
+//    vUARTCommandConsoleStart(1024, osPriorityIdle);
+//
+//    /* OTA：初始化参数区并启动vOTATask（静态分配，常驻后台接收升级命令�??????????????? */
+//    ota_init();
+//    ota_task_start();
+
+    /* init code for LWIP */
+    /* 手动 LwIP �???后初始化（defaultTask 中的 MX_LWIP_Init 已注释）�???
+     * 本任务先完成 uart_rb_register/CLI 启动，再调用 MX_LWIP_Init()�???
+     * 保证 LwIP 初始化时串口日志通道已就绪�??
+     * lwip.c 内另�???"幂等 + uart_rb 就绪"守卫，即�??? defaultTask 再次
+     * 调用也不会重复初始化（曾因重�??? tcpip_init/netif_add 导致
+     * netif 链表自环、信号量/线程重复创建，触�??? port.c:415 断言）�?? */
+    MX_LWIP_Init();
 
     /* Infinite loop */
     for (;;) {
@@ -228,20 +321,23 @@ void StartMyTask(void *argument)
         /* Soft-delay poll period ~1ms: yield CPU, then check PVD event.
          * pvd_poll_handler fast-returns when no event is pending. */
         osDelay(1);
-		pvd_poll_handler();
+//		pvd_poll_handler();
 
-#if (!ELOG_FILE_SYNC_ON_WRITE)
-        static uint32_t last_flush_tick = 0;
-        uint32_t now = HAL_GetTick();
-        if (now - last_flush_tick >= ELOG_FILE_FLUSH_INTERVAL_MS) {
-            elog_file_flush_all();
-            last_flush_tick = now;
-        }
-#endif
+//#if (!ELOG_FILE_SYNC_ON_WRITE)
+//        static uint32_t last_flush_tick = 0;
+//        uint32_t now = HAL_GetTick();
+//        if (now - last_flush_tick >= ELOG_FILE_FLUSH_INTERVAL_MS) {
+//            elog_file_flush_all();
+//            last_flush_tick = now;
+//        }
+//#endif
 
     }
 }
 
+/* 栈溢出钩子：FreeRTOS �????测到任务栈溢出（configCHECK_FOR_STACK_OVERFLOW=2�????
+ * 时调用�?�输出肇事任务名，然后挂起�?��?�用于快速区�????"栈溢�????"死机�????
+ * 注意：此钩子在任务上下文执行，uart_rb_write 安全�???? */
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     (void)xTask;
@@ -252,11 +348,147 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
     for(;;);
 }
 
+/* 内存分配失败钩子：pvPortMalloc 失败（堆耗尽）时调用�????次，
+ * 用于区分"内存不足"类死机�?? */
 void vApplicationMallocFailedHook(void)
 {
     uart_rb_write((uint8_t*) "\r\n[FATAL] malloc failed!\r\n", sizeof("\r\n[FATAL] malloc failed!\r\n") - 1);
     taskDISABLE_INTERRUPTS();
     for(;;);
+}
+
+
+
+/* 十进制输出（寄存器轮询，任何上下文安全）；用于打�??? IPSR/VECTACTIVE */
+static void uart_poll_putdec(uint32_t v)
+{
+    char digits[12];
+    int idx = 0;
+
+    do {
+        digits[idx++] = (char)('0' + (v % 10));
+        v /= 10;
+    } while (v > 0);
+
+    while (idx > 0) {
+        idx--;
+        while ((USART1->SR & USART_SR_TXE) == 0U) {}
+        USART1->DR = (uint8_t)digits[idx];
+    }
+}
+
+/* FreeRTOS 断言增强诊断：在原有 "文件:行号" 基础上追加上下文信息，用�???
+ * 精确定位 port.c:415 这类"ISR 中调用非 FromISR 临界�???"断言�???
+ *   [A] IPSR=xx VECTACTIVE=xx
+ *       当前异常编号�???0=线程模式）�?�port.c:415 断言等价�??? VECTACTIVE!=0�???
+ *       此�?�可直接映射�??? NVIC 中断号（VECTACTIVE - 16 = IRQn），
+ *       从�?�锁定是哪个外设中断调用�??? taskENTER_CRITICAL�???
+ *   [A] frame PC=0x... LR=0x...
+ *       �??? Handler 栈（MSP）向上扫描，�???"xPSR �??? Thumb �??? + PC 落在 Flash"
+ *       特征定位硬件异常帧，打印被中断现场的 PC/LR�???
+ * 全部使用寄存器轮询输出：断言本身常由临界�???/中断违例引起，此时调度器�???
+ * DMA、环形缓冲均不可信，�??? PVD/复位诊断同一策略�??? */
+void prvAssertFailPrint(const char *file, int line)
+{
+    const char *p;
+    const char *base;
+    int n = line;
+    uint32_t ipsr;
+    uint32_t vectactive;
+
+    /* 输出固定前缀 */
+    p = "\r\n[ASSERT] ";
+    while (*p != '\0') {
+        while ((USART1->SR & USART_SR_TXE) == 0U) {}
+        USART1->DR = (uint8_t)*p;
+        p++;
+    }
+
+    /* 仅打印文件名（截取最后一�???? '/' �???? '\\' 之后的部分） */
+    base = file;
+    if (file != NULL) {
+        while (*file != '\0') {
+            if ((*file == '/') || (*file == '\\')) {
+                base = file + 1;
+            }
+            file++;
+        }
+        p = base;
+        while (*p != '\0') {
+            while ((USART1->SR & USART_SR_TXE) == 0U) {}
+            USART1->DR = (uint8_t)*p;
+            p++;
+        }
+    }
+
+    p = ":";
+    while (*p != '\0') {
+        while ((USART1->SR & USART_SR_TXE) == 0U) {}
+        USART1->DR = (uint8_t)*p;
+        p++;
+    }
+
+    /* 行号转十进制后�?�位输出 */
+    if (n < 0) {
+        n = -n;
+    }
+    {
+        char digits[12];
+        int idx = 0;
+
+        do {
+            digits[idx++] = (char)('0' + (n % 10));
+            n /= 10;
+        } while (n > 0);
+        while (idx > 0) {
+            idx--;
+            while ((USART1->SR & USART_SR_TXE) == 0U) {}
+            USART1->DR = (uint8_t)digits[idx];
+        }
+    }
+
+    /* ---- 增强诊断：断�???上下文（当前异常�??? + 被中�??? PC/LR�??? ---- */
+    ipsr = __get_IPSR();                    /* 当前执行异常编号 */
+    vectactive = (SCB->ICSR) & 0x1FFUL;     /* ICSR[8:0]：活动异常号 */
+
+    uart_poll_puts("\r\n[A] IPSR=");
+    uart_poll_putdec(ipsr);
+    uart_poll_puts(" VECTACTIVE=");
+    uart_poll_putdec(vectactive);
+
+    /* 尝试�??? MSP 向上扫描，按异常帧特征定位被中断现场 */
+    {
+        volatile uint32_t *sp = (volatile uint32_t *)__get_MSP();
+        volatile uint32_t *end = sp + 64;
+        uint32_t found = 0;
+
+        while (sp < end) {
+            uint32_t xpsr = sp[7];
+            uint32_t pc   = sp[6];
+
+            /* 异常�??? xPSR �??? Thumb �???(bit24)必须置位，且 PC 落在 Flash 程序�??? */
+            if (((xpsr & 0x01000000UL) != 0UL) &&
+                ((pc & 0xFFF00000UL) == 0x08000000UL)) {
+                uart_poll_puts("\r\n[A] frame PC=0x");
+                uart_poll_puthex(pc);
+                uart_poll_puts(" LR=0x");
+                uart_poll_puthex(sp[5]);
+                found = 1;
+                break;
+            }
+            sp++;
+        }
+        if (found == 0) {
+            uart_poll_puts("\r\n[A] frame not-found");
+        }
+    }
+
+    p = "\r\n";
+    while (*p != '\0') {
+        while ((USART1->SR & USART_SR_TXE) == 0U) {}
+        USART1->DR = (uint8_t)*p;
+        p++;
+    }
 }
 
 /* USER CODE END Application */
