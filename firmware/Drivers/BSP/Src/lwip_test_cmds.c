@@ -11,6 +11,7 @@
   *   tcp_test <ip> <port> <len>  - TCP 客户端回环测试（PC 端需运行 echo 服务）
   *   udp_test <ip> <port> <len>  - UDP 回环测试（PC 端需运行 echo 服务）
   *   lwip_test <ip> [...]        - 上述测试的集成执行（一次完成全部验证）
+  *   icmp_diag on|off            - ICMP 收发诊断日志开关（默认关闭）
   *
   * 设计说明（为什么这样做）：
   *   1. 统一使用 LwIP netconn（Sequential API）：netconn 内部通过 tcpip 线程
@@ -1141,6 +1142,54 @@ static const CLI_Command_Definition_t xLwipTestCmd = {
     -1
 };
 
+/* ICMP 收发诊断总开关：默认关闭。
+ * 为什么默认关闭：排查期开启可观测每帧收发，但每帧 2 行日志（TX/RX 各 1）
+ * 在持续网络流量下会刷屏，撑满 UART TX 环形缓冲（8KB，满则丢），把 CLI 的
+ * 命令结束标记 [Press ENTER...] 挤出缓冲，导致 PC 端测试脚本误判命令超时
+ * （实测：ping 功能正常却判 FAIL，见 lwip_test_report）。需要观测时用
+ * CLI 命令 "icmp_diag on" 临时开启，不用时 "icmp_diag off" 关闭。
+ * 注意：该变量必须先于 prvIcmpDiagCmd 声明（C 语言要求先声明后使用）。 */
+static volatile uint8_t g_lwip_icmp_diag_enabled = 0;
+
+/* icmp_diag 命令：ICMP 收发诊断日志开关（默认关闭）。
+ * 排查 ping/丢包问题时临时 "icmp_diag on" 观测每帧收发，结束后
+ * "icmp_diag off" 关闭，避免日志刷屏影响 CLI 输出完整性。 */
+static BaseType_t prvIcmpDiagCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
+                                 const char *pcCommandString)
+{
+    const char *pcParam = NULL;
+    BaseType_t xParamLen = 0;
+
+    pcParam = FreeRTOS_CLIGetParameter(pcCommandString, 1, &xParamLen);
+    if ((pcParam == NULL) || (xParamLen == 0)) {
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "\r\nicmp_diag on|off\r\n"
+                 " ICMP TX/RX diagnostics: %s\r\n",
+                 g_lwip_icmp_diag_enabled ? "ON" : "OFF");
+        return pdFALSE;
+    }
+    if ((xParamLen == 2) && (strncmp(pcParam, "on", 2) == 0)) {
+        g_lwip_icmp_diag_enabled = 1;
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "\r\nicmp_diag: ON (ICMP TX/RX logging enabled)\r\n");
+    } else if ((xParamLen == 3) && (strncmp(pcParam, "off", 3) == 0)) {
+        g_lwip_icmp_diag_enabled = 0;
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "\r\nicmp_diag: OFF (ICMP TX/RX logging disabled)\r\n");
+    } else {
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "\r\nicmp_diag: invalid arg '%s' (use on or off)\r\n", pcParam);
+    }
+    return pdFALSE;
+}
+
+static const CLI_Command_Definition_t xIcmpDiagCmd = {
+    "icmp_diag",
+    "\r\nicmp_diag on|off:\r\n Enable/disable ICMP TX/RX diagnostics (default off)\r\n",
+    prvIcmpDiagCmd,
+    -1
+};
+
 /**
   * @brief  注册所有 LwIP 测试命令
   * @retval None
@@ -1154,6 +1203,7 @@ void vRegisterLwipTestCommands(void)
     FreeRTOS_CLIRegisterCommand(&xTcpTestCmd);
     FreeRTOS_CLIRegisterCommand(&xUdpTestCmd);
     FreeRTOS_CLIRegisterCommand(&xLwipTestCmd);
+    FreeRTOS_CLIRegisterCommand(&xIcmpDiagCmd);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1169,6 +1219,9 @@ void vRegisterLwipTestCommands(void)
  *   2. lwip_linkoutput_wrap：netif->linkoutput 包装（由 lwip.c 在
  *      MX_LWIP_Init 末尾安装）。linkoutput 收到的 pbuf 是完整以太网帧，
  *      打印实际发到链路的 ICMP 帧，确认 Echo Request / Reply 是否真的发出。 */
+
+/* 开关变量 g_lwip_icmp_diag_enabled 已在文件前部（prvIcmpDiagCmd 之前）声明，
+ * 见 "icmp_diag 命令" 一节，此处不再重复声明，仅保留钩子实现。 */
 
 /**
   * @brief  ip4_input 入口钩子：旁路打印收到的 ICMP Echo 帧与 netif 路由
@@ -1187,6 +1240,12 @@ int lwip_hook_ip4_input(struct pbuf *p, struct netif *inp)
     char ni_str[16];
     char nm_str[16];
     char gw_str[16];
+
+    /* 诊断关闭时零开销直接放行：钩子仍被 ip4_input 调用，但不做任何打印。
+     * 返回 0 不消费报文，协议栈行为与未挂钩时完全一致。 */
+    if (!g_lwip_icmp_diag_enabled) {
+        return 0;
+    }
 
     if ((p == NULL) || (inp == NULL)) {
         return 0;
@@ -1261,7 +1320,9 @@ static err_t (*s_orig_linkoutput)(struct netif *netif, struct pbuf *p) = NULL;
   */
 err_t lwip_linkoutput_wrap(struct netif *netif, struct pbuf *p)
 {
-    if ((netif != NULL) && (p != NULL)) {
+    /* 诊断关闭时直接转发原 linkoutput，不解析不打印，转发路径零附加开销。
+     * 包装层始终保留（避免频繁安装/卸载），仅由开关控制是否观测。 */
+    if (g_lwip_icmp_diag_enabled && (netif != NULL) && (p != NULL)) {
         /* linkoutput 收到的 pbuf 是完整以太网帧（payload 从 MAC 头开始） */
         if (p->tot_len >= (SIZEOF_ETH_HDR + IP_HLEN)) {
             const struct eth_hdr *eh = (const struct eth_hdr *)p->payload;

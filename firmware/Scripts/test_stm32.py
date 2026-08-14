@@ -191,7 +191,15 @@ class CLITestSuite:
             if 'HardFault' in line:
                 self.hardfault_count += 1
                 print(f"[{time.time():.3f}] [ERROR] HardFault detected!")
-            elif line.strip() == '>' or line.strip() == '> ' or '> ' in line or line.endswith('>'):
+            elif line.strip() == '>':
+                # 提示符必须是"单独一行"（strip 后恰好为 '>'），不能放宽为
+                # "'> ' in line" 或 "以 > 开头"：
+                #  1) ICMP 诊断日志 "[ICMP-TX] REQ 101 -> 100 ..." 含 "-> "，
+                #     会被误判为提示符，prompt_count 被刷屏虚增；
+                #  2) 命令回显 "> log tail 20" 也会以 '>' 开头，若计入则命令
+                #     刚回显就被判定完成，实际输出还没到来。
+                # 只有设备执行完命令后打印的独立提示符 '> ' 才算完成。
+                # （实测修复前 log tail 16ms 内即被误判完成）
                 self.prompt_count += 1
                 print(f"[{time.time():.3f}] [DEBUG] Prompt detected: {repr(line)}")
             elif 'Buffer full count:' in line:
@@ -625,10 +633,23 @@ class CLITestSuite:
                              ('log tail 500', 60),
                              ('log tail all', 60)]:
             ok, rtt, out = self.send_and_capture(cmd, timeout=timeout)
-            has_gen = any('generated log #' in line for line in out)
+            # 注意：log gen 写入的日志内容为 "generated log line #N"，
+            # 检查串必须包含 "line"，否则与实际日志格式不匹配导致误判 FAIL
+            has_gen = any('generated log line #' in line for line in out)
             has_end = any('=== End of output ===' in line for line in out)
-            checks[cmd] = ok and has_gen
-            print(f"  [{'OK' if ok and has_gen else 'FAIL'}] {cmd}  (RTT={rtt:.1f}ms)")
+            cmd_ok = ok and has_gen
+            checks[cmd] = cmd_ok
+            # 记录到统计结果，使最终报告能反映每条 log tail 的通过与 RTT
+            with self.lock:
+                self.results['total_commands'] += 1
+                if cmd_ok:
+                    self.results['successful_commands'] += 1
+                    self.results['rtt_values'].append(rtt)
+                else:
+                    self.results['failed_commands'] += 1
+                    self.results['errors'].append(
+                        f"log tail end-marker: {cmd} ok={ok} has_gen={has_gen} has_end={has_end}")
+            print(f"  [{'OK' if cmd_ok else 'FAIL'}] {cmd}  (RTT={rtt:.1f}ms)")
             print(f"        - 含生成的日志内容: {has_gen}")
             print(f"        - 识别到结束标记 '=== End of output ===': {has_end}")
 

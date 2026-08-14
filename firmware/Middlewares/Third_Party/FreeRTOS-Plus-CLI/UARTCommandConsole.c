@@ -58,7 +58,7 @@ void vRefreshCLIPrompt( void );
 void vSetPromptRefreshNeeded( void );
 
 static const char * const pcWelcomeMessage = "CLI task started, type 'help' for available commands\r\n";
-static const char * const pcEndOfOutputMessage = "\r\n[Press ENTER to execute the previous command again]\r\n";
+static const char * const pcEndOfOutputMessage = "\r\n[End of command output]\r\n";
 static const char * const pcNewLine = "\r\n";
 
 volatile BaseType_t xPromptRefreshNeeded = pdFALSE;
@@ -206,7 +206,6 @@ static void prvUARTCommandConsoleTask( void * pvParameters )
 {
     signed char cRxedChar;
     char * pcOutputString;
-    static char cLastInputString[ cmdMAX_INPUT_SIZE ];
     BaseType_t xReturned;
 
     ( void ) pvParameters;
@@ -253,38 +252,34 @@ static void prvUARTCommandConsoleTask( void * pvParameters )
                 xInUserInputMode = pdFALSE;
                 uart_rb_write( ( uint8_t * ) pcNewLine, strlen( pcNewLine ) );
 
-                if( ucInputIndex == 0 && cLastInputString[0] == '\0' )
+                if( ucInputIndex == 0 )
                 {
+                    /* 空白行回车：不执行任何指令，仅换行并打印新提示符。
+                     * 已取消"回车重复执行上一条命令"的 ENTER 功能，避免
+                     * 误按回车把上一条命令（如大段 log tail）重新执行一遍。 */
                     uart_rb_write( ( uint8_t * ) cmdPROMPT_STRING, strlen( cmdPROMPT_STRING ) );
                     xInUserInputMode = pdTRUE;
                 }
                 else
                 {
-                    if( ucInputIndex == 0 )
-                    {
-                        strcpy( ( void * ) cInputString, ( const void * ) cLastInputString );
-                        ucInputIndex = ( uint8_t ) strlen( ( const char * ) cInputString );
-                    }
-
                     cInputString[ ucInputIndex ] = '\0';
 
                     do
+                    {
+                        xReturned = FreeRTOS_CLIProcessCommand( ( char * ) cInputString,
+                                                                pcOutputString,
+                                                                configCOMMAND_INT_MAX_OUTPUT_SIZE );
+
+                        pcOutputString[ configCOMMAND_INT_MAX_OUTPUT_SIZE - 1 ] = '\0';
+                        size_t output_len = strlen( pcOutputString );
+                        if( output_len > 0 )
                         {
-                            xReturned = FreeRTOS_CLIProcessCommand( ( char * ) cInputString,
-                                                                    pcOutputString,
-                                                                    configCOMMAND_INT_MAX_OUTPUT_SIZE );
-                            
-                            pcOutputString[ configCOMMAND_INT_MAX_OUTPUT_SIZE - 1 ] = '\0';
-                            size_t output_len = strlen( pcOutputString );
-                            if( output_len > 0 )
-                            {
-                                uart_rb_write( ( uint8_t * ) pcOutputString, output_len );
-                            }
-                            taskYIELD();
-                        } while( xReturned != pdFALSE );
+                            uart_rb_write( ( uint8_t * ) pcOutputString, output_len );
+                        }
+                        taskYIELD();
+                    } while( xReturned != pdFALSE );
 
                     vAddToHistory( ( char * ) cInputString );
-                    strcpy( ( void * ) cLastInputString, ( const void * ) cInputString );
 
                     ucInputIndex = 0;
                     ucCursorPos = 0;

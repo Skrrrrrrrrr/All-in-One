@@ -60,7 +60,7 @@ DEFAULT_TCP_PORT = 8000
 DEFAULT_UDP_PORT = 8001
 DEFAULT_DEVICE_IP = "192.168.11.101"
 MAX_PAYLOAD = 1024
-ECHO_END_MARKER = "[Press ENTER to execute the previous command again]"
+ECHO_END_MARKER = "[End of command output]"
 
 
 def auto_detect_pc_ip(device_ip):
@@ -247,8 +247,8 @@ class LwipTestRunner:
     def send_cmd(self, cmd, timeout=15):
         """发送命令并返回该命令的输出文本。
 
-        以 CLI 固定输出的 "[Press ENTER..." 作为命令执行结束标记，
-        该标记位于命令输出之后、下一个提示符之前。
+        以 CLI 每条命令后固定输出的 "[End of command output]" 作为命令执行
+        结束标记，该标记位于命令输出之后、下一个提示符之前。
         注意：缓冲中可能残留上次命令的标记，因此必须等待"标记计数增加"
         而非"标记出现"，否则第二条命令会立即误判为已完成。
         """
