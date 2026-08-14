@@ -1,0 +1,5 @@
+===== CMD: tcp_test 192.168.11.100 8000 256 =====
+'tcp_test 192.168.11.100 8000 256\r\n\r\n=== tcp_test 192.168.11.100 :8000 len=256 ===\r\nTCP_TEST: connect=TIMEOUT(3000 ms)\r\n\r\n[End of command output]\r\n> \r\n> '
+
+===== CMD: udp_test 192.168.11.100 8001 256 =====
+'udp_test 192.168.11.100 8001 256\r\n\r\n=== udp_test 192.168.11.100 :8001 len=256 ===\r\nUDP_TEST: rtt=1999 ms sent=256 recv=0 verify=FAIL\r\n\r\n[End of command output]\r\n> \r\n> '
