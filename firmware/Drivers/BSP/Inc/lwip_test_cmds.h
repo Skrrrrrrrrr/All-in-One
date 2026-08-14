@@ -3,15 +3,17 @@
   * @file    lwip_test_cmds.h
   * @brief   LwIP 网络测试用例 CLI 命令模块头文件
   *
-  * 提供 FreeRTOS+CLI 命令：netinfo / ping / tcp_test / udp_test / lwip_test，
-  * 用于验证 LwIP 协议栈的接口状态、链路状态、ICMP 连通性及 TCP/UDP 收发。
+  * 提供 FreeRTOS+CLI 命令：ifconfig / arp / route / ping / tcp_test /
+  * udp_test / lwip_test，用于验证 LwIP 协议栈的接口状态、链路状态、ARP 表、
+  * 路由信息、ICMP 连通性及 TCP/UDP 收发。
   *
   * @author  lwip_test_author
   * @date    2026-08-12
-  * @version V1.0
+  * @version V1.1
   *
   * 修改记录：
   * 2026-08-12  V1.0  首次创建
+  * 2026-08-14  V1.1  新增 arp/route/ifconfig 命令；arpinfo 更名为 arp
   ******************************************************************************
   */
 

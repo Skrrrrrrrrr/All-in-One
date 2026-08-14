@@ -4,11 +4,13 @@
   * @brief   LwIP 网络测试用例 CLI 命令实现
   *
   * 本模块提供以下 FreeRTOS+CLI 命令，用于验证 LwIP 协议栈：
-  *   netinfo                    - 显示网络接口状态（IP/掩码/网关/MAC/链路）
-  *   ping <ip> [count]          - ICMP 回显测试（基于 netconn RAW）
-  *   tcp_test <ip> <port> <len> - TCP 客户端回环测试（PC 端需运行 echo 服务）
-  *   udp_test <ip> <port> <len> - UDP 回环测试（PC 端需运行 echo 服务）
-  *   lwip_test <ip> [...]       - 上述测试的集成执行（一次完成全部验证）
+  *   ifconfig                    - 显示网络接口状态（IP/掩码/网关/MAC/链路）
+  *   arp                         - 显示 ARP 表（稳定条目）
+  *   route                       - 显示路由信息（默认出口与网卡列表）
+  *   ping <ip> [count]           - ICMP 回显测试（基于 netconn RAW）
+  *   tcp_test <ip> <port> <len>  - TCP 客户端回环测试（PC 端需运行 echo 服务）
+  *   udp_test <ip> <port> <len>  - UDP 回环测试（PC 端需运行 echo 服务）
+  *   lwip_test <ip> [...]        - 上述测试的集成执行（一次完成全部验证）
   *
   * 设计说明（为什么这样做）：
   *   1. 统一使用 LwIP netconn（Sequential API）：netconn 内部通过 tcpip 线程
@@ -72,6 +74,7 @@
 /* 默认测试参数 */
 #define LWIP_TEST_PING_COUNT        (4u)    /* 默认 ping 次数 */
 #define LWIP_TEST_PING_TIMEOUT_MS   (1000)  /* 单次 ping 接收超时 */
+#define LWIP_TEST_PING_INTERVAL_MS  (1000)  /* 两次 ping 发送间隔 */
 #define LWIP_TEST_TCP_TIMEOUT_MS    (3000)  /* TCP 接收超时 */
 #define LWIP_TEST_UDP_TIMEOUT_MS    (2000)  /* UDP 接收超时 */
 #define LWIP_TEST_DEFAULT_TCP_PORT  (8000)  /* 默认 TCP echo 端口 */
@@ -209,7 +212,7 @@ static const char *prvErrToStr(err_t err)
 }
 
 /*----------------------------------------------------------------------------*/
-/* netinfo：网络接口状态                                                        */
+/* ifconfig：网络接口状态                                                     */
 /*----------------------------------------------------------------------------*/
 
 /**
@@ -217,7 +220,7 @@ static const char *prvErrToStr(err_t err)
   * @param  ok 输出：接口存在且链路已建立则置 1，否则置 0
   * @retval 追加后的缓冲已用长度
   */
-static size_t prvDoNetinfo(char *buf, size_t cap, size_t used, int *ok)
+static size_t prvDoIfconfig(char *buf, size_t cap, size_t used, int *ok)
 {
     struct netif *n = netif_default;
     char ip_s[16] = "0.0.0.0";
@@ -423,6 +426,13 @@ static size_t prvDoPing(char *buf, size_t cap, size_t used,
         if (sbuf != NULL) {
             netbuf_delete(sbuf);
             sbuf = NULL;
+        }
+
+        /* 两次 ping 之间固定间隔 1000ms（模拟标准 ping 工具行为）：
+         * 逐次探测而非突发，避免连续发包时接收窗口重叠导致 RTT/丢包误判，
+         * 也便于 CLI 逐次观察每个回复。count>=4（默认值已兜底），无下溢风险。 */
+        if (i < (count - 1u)) {
+            vTaskDelay(pdMS_TO_TICKS(LWIP_TEST_PING_INTERVAL_MS));
         }
     }
 
@@ -716,25 +726,25 @@ static size_t prvDoUdpTest(char *buf, size_t cap, size_t used,
 /* CLI 命令包装                                                               */
 /*----------------------------------------------------------------------------*/
 
-/* netinfo 命令 */
-static BaseType_t prvNetinfoCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
-                                const char *pcCommandString)
+/* ifconfig 命令 */
+static BaseType_t prvIfconfigCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
+                                 const char *pcCommandString)
 {
     (void)pcCommandString;
 
-    prvDoNetinfo(pcWriteBuffer, xWriteBufferLen, 0, NULL);
+    prvDoIfconfig(pcWriteBuffer, xWriteBufferLen, 0, NULL);
     pcWriteBuffer[xWriteBufferLen - 1u] = '\0';
     return pdFALSE;
 }
 
-/* arpinfo 命令：确认 netif 运行时 IP（与配置对比）+ 打印 ARP 表稳定条目。
+/* arp 命令：确认 netif 运行时 IP（与配置对比）+ 打印 ARP 表稳定条目。
  * 背景：调试时 etharp 日志反复出现 "ARP request was not for us"，按 lwip 逻辑
  * 这表示收到的 ARP 帧目标 IP != netif 运行时 IP。若设备实际 IP 不是配置的
  * 192.168.10.101，PC 的 ARP 请求会被误判。arp_table 是 etharp.c 内部 static，
  * 外部只能经公共 API etharp_get_entry 遍历（注意：只返回 STABLE 及以上状态，
  * PENDING 条目不可见）。 */
-static BaseType_t prvArpInfoCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
-                                const char *pcCommandString)
+static BaseType_t prvArpCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
+                            const char *pcCommandString)
 {
     struct netif *n = netif_default;
     ip4_addr_t *ip = NULL;
@@ -750,7 +760,7 @@ static BaseType_t prvArpInfoCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
     (void)pcCommandString;
 
     used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
-                     "\r\n=== ARP/Netif Info ===\r\n");
+                     "\r\n=== ARP Table ===\r\n");
 
     if (n == NULL) {
         used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
@@ -789,6 +799,60 @@ static BaseType_t prvArpInfoCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
     used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
                      "ARP: %d/%u stable entries\r\n",
                      entries, (unsigned)ARP_TABLE_SIZE);
+
+    (void)used;
+    pcWriteBuffer[xWriteBufferLen - 1u] = '\0';
+    return pdFALSE;
+}
+
+/* route 命令：显示路由信息（默认出口 + 全部网卡列表），便于排查
+ * "目标不可达 / 报文走错网卡"问题。netif_list 由 lwip/netif.h 声明为 extern，
+ * 可遍历当前所有已添加的网卡接口。 */
+static BaseType_t prvRouteCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
+                              const char *pcCommandString)
+{
+    struct netif *it = netif_list;
+    struct netif *def = netif_default;
+    char ip_s[16] = "0.0.0.0";
+    char mask_s[16] = "0.0.0.0";
+    char gw_s[16] = "0.0.0.0";
+    size_t used = 0;
+    int count = 0;
+
+    (void)pcCommandString;
+
+    used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
+                     "\r\n=== Routing Table ===\r\n");
+
+    if (def != NULL) {
+        /* ip4addr_ntoa 返回静态缓冲，多次调用互相覆盖，必须先逐项拷贝 */
+        strncpy(ip_s, ip4addr_ntoa(netif_ip4_addr(def)), sizeof(ip_s) - 1u);
+        strncpy(mask_s, ip4addr_ntoa(netif_ip4_netmask(def)), sizeof(mask_s) - 1u);
+        strncpy(gw_s, ip4addr_ntoa(netif_ip4_gw(def)), sizeof(gw_s) - 1u);
+        used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
+                         "DEFAULT: via %s dev %-2.2s%d IP=%s MASK=%s UP=%s LINK=%s\r\n",
+                         gw_s, def->name, def->num, ip_s, mask_s,
+                         netif_is_up(def) ? "UP" : "DOWN",
+                         netif_is_link_up(def) ? "UP" : "DOWN");
+    } else {
+        used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
+                         "DEFAULT: none (netif_default == NULL)\r\n");
+    }
+
+    for (; it != NULL; it = it->next) {
+        const char *is_def = (it == def) ? " *" : "";
+        strncpy(ip_s, ip4addr_ntoa(netif_ip4_addr(it)), sizeof(ip_s) - 1u);
+        strncpy(mask_s, ip4addr_ntoa(netif_ip4_netmask(it)), sizeof(mask_s) - 1u);
+        strncpy(gw_s, ip4addr_ntoa(netif_ip4_gw(it)), sizeof(gw_s) - 1u);
+        used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
+                         "NETIF: dev %-2.2s%d%s IP=%s MASK=%s GW=%s UP=%s LINK=%s\r\n",
+                         it->name, it->num, is_def, ip_s, mask_s, gw_s,
+                         netif_is_up(it) ? "UP" : "DOWN",
+                         netif_is_link_up(it) ? "UP" : "DOWN");
+        count++;
+    }
+    used = prvAppend(pcWriteBuffer, xWriteBufferLen, used,
+                     "NETIF: %d interface(s)\r\n", count);
 
     (void)used;
     pcWriteBuffer[xWriteBufferLen - 1u] = '\0';
@@ -963,7 +1027,7 @@ static BaseType_t prvLwipTestCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
     if ((pcParam == NULL) || (xParamLen == 0)) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "\r\nlwip_test <ip> [tcp_port] [udp_port] [len]\r\n"
-                 "  Runs: netinfo + ping + tcp_test + udp_test\r\n");
+                 "  Runs: ifconfig + ping + tcp_test + udp_test\r\n");
         return pdFALSE;
     }
     strncpy(ip_str, pcParam, sizeof(ip_str) - 1u);
@@ -998,7 +1062,7 @@ static BaseType_t prvLwipTestCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
     used = prvAppend(pcWriteBuffer, xWriteBufferLen, 0,
                      "\r\n=== LwIP Test Suite (target %s, tcp=%ld, udp=%ld, len=%ld) ===\r\n",
                      ip_str, tcp_port, udp_port, len);
-    used = prvDoNetinfo(pcWriteBuffer, xWriteBufferLen, used, &net_ok);
+    used = prvDoIfconfig(pcWriteBuffer, xWriteBufferLen, used, &net_ok);
     used = prvDoPing(pcWriteBuffer, xWriteBufferLen, used, &target, 3, &ping_ok);
     if ((net_ok != 0) && (ping_ok != 0)) {
         /* 链路与 ICMP 均正常才继续 TCP/UDP 回环测试：
@@ -1026,17 +1090,26 @@ static BaseType_t prvLwipTestCmd(char *pcWriteBuffer, size_t xWriteBufferLen,
 }
 
 /* 命令注册表 ---------------------------------------------------------------*/
-static const CLI_Command_Definition_t xNetinfoCmd = {
-    "netinfo",
-    "\r\nnetinfo:\r\n Show network interface status (IP/MAC/link)\r\n",
-    prvNetinfoCmd,
+
+/* ifconfig：网络接口状态（IP/掩码/网关/MAC/链路） */
+static const CLI_Command_Definition_t xIfconfigCmd = {
+    "ifconfig",
+    "\r\nifconfig:\r\n Show network interface status (IP/MAC/link)\r\n",
+    prvIfconfigCmd,
     0
 };
 
-static const CLI_Command_Definition_t xArpInfoCmd = {
-    "arpinfo",
-    "\r\narpinfo:\r\n Show netif IP + ARP table (stable entries)\r\n",
-    prvArpInfoCmd,
+static const CLI_Command_Definition_t xArpCmd = {
+    "arp",
+    "\r\narp:\r\n Show netif IP + ARP table (stable entries)\r\n",
+    prvArpCmd,
+    0
+};
+
+static const CLI_Command_Definition_t xRouteCmd = {
+    "route",
+    "\r\nroute:\r\n Show routing info (default via + netif list)\r\n",
+    prvRouteCmd,
     0
 };
 
@@ -1074,8 +1147,9 @@ static const CLI_Command_Definition_t xLwipTestCmd = {
   */
 void vRegisterLwipTestCommands(void)
 {
-    FreeRTOS_CLIRegisterCommand(&xNetinfoCmd);
-    FreeRTOS_CLIRegisterCommand(&xArpInfoCmd);
+    FreeRTOS_CLIRegisterCommand(&xIfconfigCmd);
+    FreeRTOS_CLIRegisterCommand(&xArpCmd);
+    FreeRTOS_CLIRegisterCommand(&xRouteCmd);
     FreeRTOS_CLIRegisterCommand(&xPingCmd);
     FreeRTOS_CLIRegisterCommand(&xTcpTestCmd);
     FreeRTOS_CLIRegisterCommand(&xUdpTestCmd);

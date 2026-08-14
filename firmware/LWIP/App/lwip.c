@@ -29,8 +29,7 @@
 #include <string.h>
 
 /* USER CODE BEGIN 0 */
-#include "uart_ringbuf.h"   /* uart_rb_is_ready()：LwIP 初始化就绪守�? */
-/* netif->linkoutput 诊断包装（实现在 lwip_test_cmds.c�? */
+/* netif->linkoutput 诊断包装（实现在 lwip_test_cmds.c�?? */
 extern void lwip_install_linkoutput_wrap(struct netif *netif);
 /* USER CODE END 0 */
 /* Private function prototypes -----------------------------------------------*/
@@ -51,10 +50,10 @@ uint8_t IP_ADDRESS[4];
 uint8_t NETMASK_ADDRESS[4];
 uint8_t GATEWAY_ADDRESS[4];
 /* USER CODE BEGIN OS_THREAD_ATTR_CMSIS_RTOS_V2 */
-/* EthLink 线程栈：osThreadNew �?? stack_size 单位为�?�字节�?�（cmsis_os2.c
- * 内部 /= sizeof(StackType_t) 转成 word），CubeMX 默认 1024 实际只有 1KB�??
- * 该线程周期轮�?? PHY 链路状�?�并回调 netif_set_link_up/down�??-O0 �?? 1KB
- * 偏紧，增大到 2048 字节(512 words)�?? */
+/* EthLink 线程栈：osThreadNew �??? stack_size 单位为�?�字节�?�（cmsis_os2.c
+ * 内部 /= sizeof(StackType_t) 转成 word），CubeMX 默认 1024 实际只有 1KB�???
+ * 该线程周期轮�??? PHY 链路状�?�并回调 netif_set_link_up/down�???-O0 �??? 1KB
+ * 偏紧，增大到 2048 字节(512 words)�??? */
 #define INTERFACE_THREAD_STACK_SIZE ( 2048 )
 osThreadAttr_t attributes;
 /* USER CODE END OS_THREAD_ATTR_CMSIS_RTOS_V2 */
@@ -79,29 +78,10 @@ void MX_LWIP_Init(void)
   NETMASK_ADDRESS[3] = 0;
   GATEWAY_ADDRESS[0] = 192;
   GATEWAY_ADDRESS[1] = 168;
-  GATEWAY_ADDRESS[2] = 10;
+  GATEWAY_ADDRESS[2] = 11;
   GATEWAY_ADDRESS[3] = 1;
 
 /* USER CODE BEGIN IP_ADDRESSES */
-    /* LwIP 初始化守卫（幂等 + 依赖 uart_rb 就绪）：
-     * 为什么这样做�?
-     *   1. MX_LWIP_Init 会被 defaultTask（CubeMX 生成，优先级更高先运行）
-     *      �? myTask（USER CODE 段）同时调用，必须保证只真正初始化一次，
-     *      否则 tcpip_init/netif_add 重复执行会导�? netif 链表自环�?
-     *      tcpip_thread/EthIf/EthLink 重复创建、ETH 重复操作，网络流量下
-     *      并发访问损坏的数据结构最终触发随机断�?（曾定位 port.c:415）�??
-     *   2. �?"手动 LwIP �?后初始化"的设计：uart_rb（串口日志�?�道）注�?
-     *      之前直接返回，待 myTask 完成 uart_rb_register/CLI 启动后再
-     *      真正初始化，保证 LwIP 早期诊断输出有可用的串口通道�? */
-    static uint8_t s_lwip_inited = 0;
-
-    if (s_lwip_inited != 0) {
-        return;
-    }
-    if (!uart_rb_is_ready()) {
-        return;
-    }
-    s_lwip_inited = 1;
 /* USER CODE END IP_ADDRESSES */
 
   /* Initilialize the LwIP stack with RTOS */
@@ -143,10 +123,10 @@ void MX_LWIP_Init(void)
 
 /* USER CODE BEGIN 3 */
   /* 安装 netif->linkoutput 诊断包装（实现在 lwip_test_cmds.c）：
-   * 旁路打印设备实际发到链路�? ICMP Echo 帧（Request/Reply 的源/目的 IP），
-   * 用于确认"设备 ping PC"�? Echo Request 是否真的发出、以及收�? PC 回复�?
-   * Echo Reply 的发送情况�?�必须在 netif_add（ethernetif_init 设置 linkoutput�?
-   * �? netif_set_default 完成之后安装�? */
+   * 旁路打印设备实际发到链路�?? ICMP Echo 帧（Request/Reply 的源/目的 IP），
+   * 用于确认"设备 ping PC"�?? Echo Request 是否真的发出、以及收�?? PC 回复�??
+   * Echo Reply 的发送情况�?�必须在 netif_add（ethernetif_init 设置 linkoutput�??
+   * �?? netif_set_default 完成之后安装�?? */
   lwip_install_linkoutput_wrap(&gnetif);
 /* USER CODE END 3 */
 }

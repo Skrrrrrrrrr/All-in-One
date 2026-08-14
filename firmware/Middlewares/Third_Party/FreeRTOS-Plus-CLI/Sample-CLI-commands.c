@@ -241,7 +241,7 @@ static const CLI_Command_Definition_t xFlashCommand = {
 
 static const CLI_Command_Definition_t xLogCommand = {
     "log",
-    "\r\nlog [level <lvl> | tail [<count> [<filename>]] | tail all [<filename>]]:\r\n level - set log level (v/d/i/w/e)\r\n tail - display last 10 log lines\r\n tail <count> - display last <count> log lines\r\n tail <count> <file> - display last <count> lines from <file>\r\n tail all - display all log lines\r\n tail all <file> - display all lines from <file>\r\n",
+    "\r\nlog [level <lvl> | tail [<count> [<filename>]] | tail all [<filename>] | gen <count>]:\r\n level - set log level (v/d/i/w/e)\r\n tail - display last 10 log lines\r\n tail <count> - display last <count> log lines\r\n tail <count> <file> - display last <count> lines from <file>\r\n tail all - display all log lines\r\n tail all <file> - display all lines from <file>\r\n gen <count> - write <count> log entries directly to log file\r\n",
     prvLogCommand,
     -1
 };
@@ -1101,6 +1101,45 @@ static BaseType_t prvLogCommand(char *pcWriteBuffer, size_t xWriteBufferLen, con
             
             snprintf(pcWriteBuffer, xWriteBufferLen, "\r\n=== Output: Last %d lines from %s ===\r\n", (int)count, s_log_tail_state.filename);
             return pdTRUE;
+        } else if (strncmp(pcParameter, "gen", 3) == 0) {
+            /* log gen <count>：直接把 <count> 条日志写入日志文件。
+             * 用 elog_file_write 而非 elog_i 的原因：elog_i 会同时输出到串口，
+             * 大量日志会打满 UART TX 环形缓冲，反而使命令本身收不到提示符；
+             * elog_file_write 仅落盘，不回显串口，命令输出保持极小。该命令用于
+             * 构造"大量日志输出"测试场景，验证 log tail 在数据量超过请求条数
+             * /超过 UART TX 缓冲时的结束标记识别逻辑。 */
+            const char *pcCount = FreeRTOS_CLIGetParameter(pcCommandString, 2, &xParameterStringLength);
+            uint32_t count = 100u;
+            uint32_t i;
+            char line[64];
+            int n;
+
+            if (pcCount != NULL) {
+                char buf[16];
+                int len = (int)xParameterStringLength;
+                if (len >= (int)sizeof(buf)) {
+                    len = (int)sizeof(buf) - 1;
+                }
+                memcpy(buf, pcCount, (size_t)len);
+                buf[len] = '\0';
+                count = (uint32_t)strtoul(buf, NULL, 10);
+            }
+            if ((count == 0u) || (count > 10000u)) {
+                count = 100u;
+            }
+
+            for (i = 0u; i < count; i++) {
+                n = snprintf(line, sizeof(line),
+                             "D/000000.000 gen: generated log line #%u payload=%u\r\n",
+                             (unsigned)i, (unsigned)(i * 7u));
+                if (n > 0) {
+                    elog_file_write(line, (size_t)n);
+                }
+            }
+
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "\r\nLOG_GEN: wrote %u lines to log file\r\n", (unsigned)count);
+            return pdFALSE;
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen, "\r\nUnknown log command. Use 'log level <lvl>' or 'log tail'\r\n");
             return pdFALSE;

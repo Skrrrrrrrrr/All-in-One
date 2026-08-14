@@ -6,36 +6,39 @@ LwIP Network Test Suite
 功能：通过串口 CLI 对 STM32 上的 LwIP 协议栈进行自动化网络测试。
 
 测试内容（固件端命令见 Drivers/BSP/Src/lwip_test_cmds.c）：
-  1. netinfo                    - 网络接口状态（IP/掩码/网关/MAC/链路）
-  2. ping <pc_ip> [count]       - ICMP 回显测试（依赖 LWIP_RAW）
-  3. tcp_test <pc_ip> <port> <len> - TCP 回环测试（本脚本运行 TCP echo 服务）
-  4. udp_test <pc_ip> <port> <len> - UDP 回环测试（本脚本运行 UDP echo 服务）
-  5. lwip_test <pc_ip> [...]    - 上述测试的集成执行
+  1. ifconfig                    - 网络接口状态（IP/掩码/网关/MAC/链路）
+  2. arp                        - ARP 表（稳定条目）
+  3. route                      - 路由信息（默认出口 + 网卡列表）
+  4. ping <pc_ip> [count]       - ICMP 回显测试（依赖 LWIP_RAW）
+  5. tcp_test <pc_ip> <port> <len> - TCP 回环测试（本脚本运行 TCP echo 服务）
+  6. udp_test <pc_ip> <port> <len> - UDP 回环测试（本脚本运行 UDP echo 服务）
+  7. lwip_test <pc_ip> [...]    - 上述测试的集成执行
 
 使用方法：
-  1. 确认 PC 与开发板处于同一网段（开发板默认静态 IP：192.168.10.101）
+  1. 确认 PC 与开发板处于同一网段（开发板默认静态 IP：192.168.11.101）
   2. 编译烧录固件，打开串口终端确认出现 "CLI task started" 与 "> " 提示符
   3. 运行本脚本：
      python scripts/lwip_test.py -p COM3 -b 115200
-     python scripts/lwip_test.py -p COM3 --device-ip 192.168.10.101 --pc-ip 192.168.10.50
+     python scripts/lwip_test.py -p COM3 --device-ip 192.168.11.101 --pc-ip 192.168.11.100
      python scripts/lwip_test.py -p COM3 -m tcp --len 512 -o report.md
 
 参数说明：
   -p, --port        串口端口（默认 COM3）
   -b, --baud        波特率（默认 115200）
-  --device-ip       开发板静态 IP（默认 192.168.10.101，用于自动探测 PC 网卡 IP）
+  --device-ip       开发板静态 IP（默认 192.168.11.101，用于自动探测 PC 网卡 IP）
   --pc-ip           PC 端 IP（不指定则自动探测与开发板同网段的本机地址）
   --tcp-port        TCP echo 服务端口（默认 8000）
   --udp-port        UDP echo 服务端口（默认 8001）
   --len             收发负载长度（默认 256，上限 1024）
   --ping-count      ping 次数（默认 4）
-  -m, --mode        测试模式：suite（集成，默认）、single（逐条）、netinfo/ping/tcp/udp
+  -m, --mode        测试模式：suite（集成，默认）、single（逐条）、
+                    ifconfig/arp/route/ping/tcp/udp
   -o, --output      测试报告输出文件（默认 Scripts/lwip_test_report.md）
 
 说明：
   - 脚本会在 PC 端启动 TCP/UDP echo 服务器，用于验证固件 TCP/UDP 收发链路。
   - 若测试失败，请检查 Windows 防火墙是否放行入站 TCP/UDP（可临时关闭或添加规则）。
-  - 固件输出关键字：PING: / TCP_TEST: / UDP_TEST: / LWIP_TEST_SUITE: / RESULT: PASS
+  - 固件输出关键字：NETIF: / ARP: / ROUTE / PING: / TCP_TEST: / UDP_TEST: / LWIP_TEST_SUITE: / RESULT: PASS
 """
 
 import argparse
@@ -55,7 +58,7 @@ except ImportError:
 # 与固件 lwip_test_cmds.c 中保持一致的默认值
 DEFAULT_TCP_PORT = 8000
 DEFAULT_UDP_PORT = 8001
-DEFAULT_DEVICE_IP = "192.168.10.101"
+DEFAULT_DEVICE_IP = "192.168.11.101"
 MAX_PAYLOAD = 1024
 ECHO_END_MARKER = "[Press ENTER to execute the previous command again]"
 
@@ -283,13 +286,13 @@ class LwipTestRunner:
         return ok
 
     # ---------------- 单项测试 ----------------
-    def test_netinfo(self):
+    def test_ifconfig(self):
         print("\n" + "=" * 60)
-        print("TEST: netinfo")
+        print("TEST: ifconfig")
         print("=" * 60)
-        out, ok = self.send_cmd('netinfo')
+        out, ok = self.send_cmd('ifconfig')
         if not ok:
-            print("  [FAIL] netinfo 命令无响应")
+            print("  [FAIL] ifconfig 命令无响应")
             return False
         print("  " + '\n  '.join(l for l in out.splitlines() if l.strip()))
 
@@ -300,11 +303,46 @@ class LwipTestRunner:
         print(f"  [{'OK' if phy_ok else 'FAIL'}] PHY 链路 link=UP")
         return passed
 
+    def test_arp(self):
+        print("\n" + "=" * 60)
+        print("TEST: arp")
+        print("=" * 60)
+        out, ok = self.send_cmd('arp')
+        if not ok:
+            print("  [FAIL] arp 命令无响应")
+            return False
+        print("  " + '\n  '.join(l for l in out.splitlines() if l.strip()))
+
+        table_ok = ('ARP Table' in out) and ('stable entries' in out)
+        netif_ok = 'NETIF:' in out
+        passed = table_ok and netif_ok
+        print(f"  [{'OK' if table_ok else 'FAIL'}] ARP 表输出（stable entries）")
+        print(f"  [{'OK' if netif_ok else 'FAIL'}] NETIF 信息")
+        return passed
+
+    def test_route(self):
+        print("\n" + "=" * 60)
+        print("TEST: route")
+        print("=" * 60)
+        out, ok = self.send_cmd('route')
+        if not ok:
+            print("  [FAIL] route 命令无响应")
+            return False
+        print("  " + '\n  '.join(l for l in out.splitlines() if l.strip()))
+
+        default_ok = ('Routing Table' in out) and ('DEFAULT' in out)
+        iface_ok = 'interface(s)' in out
+        passed = default_ok and iface_ok
+        print(f"  [{'OK' if default_ok else 'FAIL'}] 默认出口 DEFAULT 输出")
+        print(f"  [{'OK' if iface_ok else 'FAIL'}] 网卡列表输出")
+        return passed
+
     def test_ping(self):
         print("\n" + "=" * 60)
         print(f"TEST: ping {self.pc_ip} x{self.ping_count}")
         print("=" * 60)
-        out, ok = self.send_cmd(f'ping {self.pc_ip} {self.ping_count}', timeout=20)
+        out, ok = self.send_cmd(f'ping {self.pc_ip} {self.ping_count}',
+                                timeout=20 + self.ping_count * 2)
         if not ok:
             print("  [FAIL] ping 命令无响应")
             return False
@@ -362,7 +400,7 @@ class LwipTestRunner:
 
     def test_suite(self):
         print("\n" + "=" * 60)
-        print(f"TEST: lwip_test 集成套件（netinfo+ping+tcp+udp）")
+        print(f"TEST: lwip_test 集成套件（ifconfig+ping+tcp+udp）")
         print("=" * 60)
         out, ok = self.send_cmd(f'lwip_test {self.pc_ip} {self.tcp_port} {self.udp_port} {self.payload_len}', timeout=60)
         if not ok:
@@ -404,7 +442,9 @@ class LwipTestRunner:
         report.append("")
         report.append("## Notes")
         report.append("")
-        report.append("- netinfo: 依赖 netif_default 与 DP83848 PHY 驱动")
+        report.append("- ifconfig: 依赖 netif_default 与 DP83848 PHY 驱动")
+        report.append("- arp: 依赖 LWIP_ARP；etharp_get_entry 仅返回 STABLE 及以上条目")
+        report.append("- route: 遍历 netif_list，依赖 netif_default")
         report.append("- ping: 依赖 LWIP_RAW=1（lwipopts.h USER CODE 中使能）")
         report.append("- tcp/udp: PC 端由本脚本提供 echo 服务，失败时检查 Windows 防火墙")
         with open(output_file, 'w', encoding='utf-8') as f:
@@ -428,20 +468,29 @@ class LwipTestRunner:
         print("[OK] CLI 就绪")
 
         self.results = {}
-        if mode in ('netinfo',):
-            self.results['netinfo'] = self.test_netinfo()
+        if mode == 'ifconfig':
+            self.results['ifconfig'] = self.test_ifconfig()
+        elif mode == 'arp':
+            self.results['arp'] = self.test_arp()
+        elif mode == 'route':
+            self.results['route'] = self.test_route()
         elif mode == 'ping':
             self.results['ping'] = self.test_ping()
         elif mode == 'tcp':
             self.results['tcp'] = self.test_tcp()
         elif mode == 'udp':
             self.results['udp'] = self.test_udp()
-        elif mode == 'single':
-            self.results['netinfo'] = self.test_netinfo()
+        elif mode in ('single', 'all'):
+            self.results['ifconfig'] = self.test_ifconfig()
+            self.results['arp'] = self.test_arp()
+            self.results['route'] = self.test_route()
             self.results['ping'] = self.test_ping()
             self.results['tcp'] = self.test_tcp()
             self.results['udp'] = self.test_udp()
         else:  # suite（默认）
+            self.results['ifconfig'] = self.test_ifconfig()
+            self.results['arp'] = self.test_arp()
+            self.results['route'] = self.test_route()
             self.results['suite'] = self.test_suite()
 
         tcp_srv.stop()
@@ -476,7 +525,8 @@ def main():
     parser.add_argument('--len', type=int, default=256, help='Payload length (1-1024)')
     parser.add_argument('--ping-count', type=int, default=4, help='Ping count (1-100)')
     parser.add_argument('-m', '--mode', default='suite',
-                        choices=['suite', 'single', 'netinfo', 'ping', 'tcp', 'udp'],
+                        choices=['suite', 'single', 'all', 'ifconfig',
+                                 'arp', 'route', 'ping', 'tcp', 'udp'],
                         help='Test mode')
     parser.add_argument('-o', '--output', default=os.path.join(script_dir, 'lwip_test_report.md'),
                         help='Report output file')
