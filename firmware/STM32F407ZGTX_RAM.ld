@@ -167,6 +167,33 @@ SECTIONS
     _eccmram = .;       /* create a global symbol at ccmram end */
   } >CCMRAM AT> RAM
 
+  /* ============================================================
+   * CCMRAM 未初始化数据段（BSS）：收集 OTA 任务资源 / EasyLogger
+   * 缓冲 / CLI 输入历史缓冲等仅 CPU 访问的缓冲，释放普通 RAM。
+   * 注意：被 DMA 访问的缓冲（uart_rb、UART RX 缓冲、ETH DMA、
+   * LwIP pbuf/memp、SPI DMA 数据源）绝不能放入本段。
+   * NOLOAD 段无需从 Flash 拷贝初始值，但启动时须由
+   * freertos.c 的 system_pre_init() 手动清零（startup 只清 .bss）。
+   * ============================================================ */
+  .ccmram_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _sccmram_bss = .;
+    *(.bss.s_ota_stack)
+    *(.bss.s_ota_tcb)
+    *(.bss.s_ota_q_cb)
+    *(.bss.s_ota_q_storage)
+    *(.bss.s_ota_done_cb)
+    *(.bss.s_verify_buf)
+    *(.bss.log_buf)
+    *(.bss.poll_get_buf)
+    *(.bss.cInputString)
+    *(.bss.cHistoryBuffer)
+    *(.bss.cSavedInput)
+    . = ALIGN(4);
+    _eccmram_bss = .;
+  } >CCMRAM
+
   /* Uninitialized data section into "RAM" Ram type memory */
   . = ALIGN(4);
   .bss :

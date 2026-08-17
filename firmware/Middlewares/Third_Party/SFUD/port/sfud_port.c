@@ -47,7 +47,9 @@ static sfud_port_context_t s_context = {
     .log_cb = NULL,
 };
 
-static char log_buf[256];
+/* SFUD 日志缓冲：仅 CPU 使用（格式化后经日志回调输出），可放 CCMRAM。
+ * 与 SPI 数据缓冲（spi_dummy_buf/spi_dma_rx_combined）无关，不影响 DMA。 */
+static char log_buf[256] __attribute__((section(".bss.log_buf")));
 
 void sfud_log_debug(const char *file, const long line, const char *format, ...);
 void sfud_log_info(const char *format, ...);

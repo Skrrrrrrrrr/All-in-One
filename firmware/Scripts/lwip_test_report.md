@@ -1,7 +1,7 @@
 # LwIP Network Test Report
 
 ## Test Configuration
-- **Test Date**: 2026-08-14 18:47:34
+- **Test Date**: 2026-08-16 10:05:23
 - **Serial Port**: COM3 @ 115200
 - **Device IP**: 192.168.11.101
 - **PC IP**: 192.168.11.100
@@ -16,9 +16,9 @@
 | ifconfig | ✅ |
 | arp | ✅ |
 | route | ✅ |
-| suite | ✅ |
+| suite | ❌ |
 
-**RESULT: PASS** (4/4)
+**RESULT: FAIL** (3/4)
 
 ## Notes
 

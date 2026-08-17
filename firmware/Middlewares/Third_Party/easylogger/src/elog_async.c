@@ -69,7 +69,8 @@ static pthread_t async_output_thread;
 /* asynchronous output mode enabled flag */
 static bool is_enabled = false;
 /* asynchronous output mode's ring buffer */
-static char log_buf[OUTPUT_BUF_SIZE] = { 0 };
+/* 环形缓冲仅 CPU 读写，可放 CCMRAM（输出时逐块 memcpy 到普通 RAM 再送端口） */
+static char log_buf[OUTPUT_BUF_SIZE] __attribute__((section(".bss.log_buf"))) = { 0 };
 /* log ring buffer write index */
 static size_t write_index = 0;
 /* log ring buffer read index */
@@ -272,7 +273,7 @@ void elog_async_output_notice(void) {
 
 static void *async_output(void *arg) {
     size_t get_log_size = 0;
-    static char poll_get_buf[ELOG_ASYNC_POLL_GET_LOG_BUF_SIZE];
+    static char poll_get_buf[ELOG_ASYNC_POLL_GET_LOG_BUF_SIZE] __attribute__((section(".bss.poll_get_buf")));
 
     (void)arg;
 

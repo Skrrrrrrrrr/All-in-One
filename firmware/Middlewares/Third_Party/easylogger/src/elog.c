@@ -117,7 +117,9 @@
 /* EasyLogger object */
 static EasyLogger elog;
 /* every line log's buffer */
-static char log_buf[ELOG_LINE_BUF_SIZE] = { 0 };
+/* 仅 CPU 访问（vsnprintf 拼装后经 elog_port_output 拷贝到普通 RAM 环形缓冲
+ * 再走 DMA），可安全放入 CCMRAM 以释放普通 RAM */
+static char log_buf[ELOG_LINE_BUF_SIZE] __attribute__((section(".bss.log_buf"))) = { 0 };
 /* level output info */
 static const char *level_output_info[] = {
         [ELOG_LVL_ASSERT]  = "A/",

@@ -281,7 +281,14 @@ class CLITestSuite:
                             print(f"[{time.time():.3f}] [DEBUG] Command '{cmd[:20]}...' succeeded, RTT={rtt:.1f}ms")
                             return True, rtt
                     
-                    if current_prompt >= target_prompt:
+                    # 提示符判定仅用于非 log tail 命令。原因：
+                    # 设备每条命令结束后会输出 "\r\n[End of command output]\r\n> \r\n> "
+                    # （命令提示符 + 空行回车产生的第二个提示符）。第二个 "> " 会滞留
+                    # 在脚本读缓冲中，若其后的回车使该 "> " 成为独立行，prompt_count 会
+                    # 提前达标，log tail 命令在输出尚未到达时即被误判完成，导致捕获内容
+                    # 为空（实测复现：log tail 20/200 出现 ok=True has_gen=False has_end=False）。
+                    # log tail 的完成应由"结束标记 + 静默兜底"可靠判定，无需提示符。
+                    if (not is_log_tail) and current_prompt >= target_prompt:
                         rtt = (time.time() - send_time) * 1000
                         if is_log_tail:
                             print(f"[{time.time():.3f}] [DEBUG] >>> 'log tail' COMPLETED (attempt {attempt}) <<<")
@@ -648,7 +655,8 @@ class CLITestSuite:
                 else:
                     self.results['failed_commands'] += 1
                     self.results['errors'].append(
-                        f"log tail end-marker: {cmd} ok={ok} has_gen={has_gen} has_end={has_end}")
+                        f"log tail end-marker: {cmd} ok={ok} has_gen={has_gen} has_end={has_end} "
+                        f"captured={len(out)} first={out[:2] if out else []} last={out[-2:] if out else []}")
             print(f"  [{'OK' if cmd_ok else 'FAIL'}] {cmd}  (RTT={rtt:.1f}ms)")
             print(f"        - 含生成的日志内容: {has_gen}")
             print(f"        - 识别到结束标记 '=== End of output ===': {has_end}")

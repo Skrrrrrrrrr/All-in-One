@@ -40,15 +40,21 @@ static ota_params_t s_params;
 #define OTA_WRITE_TIMEOUT_MS   (2000u)
 #define OTA_VERIFY_BUF_SIZE    (512u)   /* 校验分块缓冲，避免大数组入栈 */
 
-static StackType_t s_ota_stack[OTA_TASK_STACK_WORDS];
-static StaticTask_t s_ota_tcb;
-static StaticQueue_t s_ota_q_cb;
-static uint8_t s_ota_q_storage[OTA_QUEUE_LEN * 32u];  /* 消息池 */
+/* 以下 OTA 任务资源仅被 CPU 访问（无 DMA 参与），全部放入 CCMRAM
+ * (0x10000000, 仅 CPU 可访问)。搬移后可释放约 3.2KB 普通 RAM。
+ * 注意：.ccmram_bss 为 NOLOAD 段，startup 不清零，已由 freertos.c
+ * system_pre_init() 统一清零。 */
+#define OTA_CCM_SECTION(sec) __attribute__((section(sec)))
+
+static StackType_t s_ota_stack[OTA_TASK_STACK_WORDS] OTA_CCM_SECTION(".bss.s_ota_stack");
+static StaticTask_t s_ota_tcb OTA_CCM_SECTION(".bss.s_ota_tcb");
+static StaticQueue_t s_ota_q_cb OTA_CCM_SECTION(".bss.s_ota_q_cb");
+static uint8_t s_ota_q_storage[OTA_QUEUE_LEN * 32u] OTA_CCM_SECTION(".bss.s_ota_q_storage");  /* 消息池 */
 static QueueHandle_t s_ota_q = NULL;
-static StaticSemaphore_t s_ota_done_cb;
+static StaticSemaphore_t s_ota_done_cb OTA_CCM_SECTION(".bss.s_ota_done_cb");
 static SemaphoreHandle_t s_ota_done_sem = NULL;
 static volatile int s_ota_result = OTA_ERR_OK;
-static uint8_t s_verify_buf[OTA_VERIFY_BUF_SIZE];
+static uint8_t s_verify_buf[OTA_VERIFY_BUF_SIZE] OTA_CCM_SECTION(".bss.s_verify_buf");
 
 /* 消息定义 */
 typedef enum {

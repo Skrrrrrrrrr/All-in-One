@@ -122,6 +122,21 @@ static void uart_poll_puthex(uint32_t v)
 static void system_pre_init(void) {
     uint32_t reset_flags = RCC->CSR;
 
+    /* 清零 CCMRAM BSS 段（.ccmram_bss 为 NOLOAD，startup 仅清普通 .bss）。
+     * OTA/日志/CLI 缓冲在调度器启动后才被使用，此处清零必须先于一切使用点。 */
+    extern uint8_t _sccmram_bss;
+    extern uint8_t _eccmram_bss;
+    {
+        uint8_t *p = &_sccmram_bss;
+        uint32_t len = (uint32_t)&_eccmram_bss - (uint32_t)&_sccmram_bss;
+
+        while (len > 0u) {
+            *p = 0u;
+            p++;
+            len--;
+        }
+    }
+
     uart_poll_puts("\r\n[BOOT] RCC_CSR=0x");
     uart_poll_puthex(reset_flags);
     uart_poll_puts(" (");

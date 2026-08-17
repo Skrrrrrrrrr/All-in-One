@@ -67,14 +67,16 @@ volatile BaseType_t xInUserInputMode = pdFALSE;
 
 xComPortHandle xPort = 0;
 
-volatile char cInputString[ cmdMAX_INPUT_SIZE ];
+/* 输入/历史缓冲仅由 CLI 任务 CPU 访问（UART RX DMA 写入的是 usart.c 的
+ * rx_buff，TX DMA 读取的是 uart_ringbuf.c 的 uart_rb），可安全放入 CCMRAM。 */
+volatile char cInputString[ cmdMAX_INPUT_SIZE ] __attribute__((section(".bss.cInputString")));
 volatile uint8_t ucInputIndex = 0;
 
 /* ---------- History buffer ---------- */
-static char cHistoryBuffer[ cmdHISTORY_SIZE ][ cmdMAX_INPUT_SIZE ];
+static char cHistoryBuffer[ cmdHISTORY_SIZE ][ cmdMAX_INPUT_SIZE ] __attribute__((section(".bss.cHistoryBuffer")));
 static uint8_t ucHistoryCount = 0;      /* Number of valid history entries */
 static uint8_t ucHistoryBrowse = 0;     /* 0=not browsing; 1..N = browsing from newest */
-static char cSavedInput[ cmdMAX_INPUT_SIZE ];  /* Saved partial input when starting browse */
+static char cSavedInput[ cmdMAX_INPUT_SIZE ] __attribute__((section(".bss.cSavedInput")));  /* Saved partial input when starting browse */
 
 /* ---------- Cursor position ---------- */
 static uint8_t ucCursorPos = 0;
