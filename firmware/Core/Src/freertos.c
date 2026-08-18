@@ -35,6 +35,7 @@
 #include <string.h>          /* strlen()：栈溢出钩子中打印任务名 */
 #include "bsp_init.h"        /* bsp_init()：BSP 各驱动模块注册初始化 */
 #include "elog.h"            /* elog_set_filter_lvl()：EasyLogger 过滤级别 */
+#include "elog_file_cfg.h"
 #include "pvd_detection.h"   /* pvd_init/pvd_mark_ready/pvd_poll_handler() */
 #include "ota_core.h"        /* ota_init/ota_task_start()：A/B 双区 OTA */
 /* 注：elog_file.h 未被本文件直接使用（日志落盘�? pvd_detection.c 内）�?
@@ -273,16 +274,18 @@ void StartMyTask(void *argument)
         /* Soft-delay poll period ~1ms: yield CPU, then check PVD event.
          * pvd_poll_handler fast-returns when no event is pending. */
         osDelay(1);
-        pvd_poll_handler();
 
-//#if (!ELOG_FILE_SYNC_ON_WRITE)
-//        static uint32_t last_flush_tick = 0;
-//        uint32_t now = HAL_GetTick();
-//        if (now - last_flush_tick >= ELOG_FILE_FLUSH_INTERVAL_MS) {
-//            elog_file_flush_all();
-//            last_flush_tick = now;
-//        }
-//#endif
+#if (!ELOG_FILE_SYNC_ON_WRITE)
+        extern void elog_file_flush_all(void);
+        static uint32_t last_flush_tick = 0;
+        uint32_t now = HAL_GetTick();
+        if (now - last_flush_tick >= ELOG_FILE_FLUSH_INTERVAL_MS) {
+            elog_file_flush_all();
+            last_flush_tick = now;
+        }
+#else
+        pvd_poll_handler();
+#endif
 
     }
 }

@@ -80,10 +80,13 @@ static void pvd_wait_uart_idle(void)
 
 static void pvd_direct_log(const char *msg)
 {
-    while (*msg) {
+#if 0
+	while (*msg) {
         while (!(USART1->SR & USART_SR_TXE)) {}
         USART1->DR = (uint8_t)(*msg++);
     }
+#endif
+    log_e(msg);
 }
 
 void pvd_init(void)
