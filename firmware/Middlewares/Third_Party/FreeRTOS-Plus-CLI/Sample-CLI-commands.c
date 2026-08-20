@@ -1341,6 +1341,16 @@ static BaseType_t prvResetCommand(char *pcWriteBuffer, size_t xWriteBufferLen, c
 
     osDelay(200);
 
+    /* Defend against a PVD event latched in the instant before this command
+     * ran: clear the trigger counter and re-assert the PVDO flag clear so the
+     * 1ms PVD poll handler cannot misread this DELIBERATE reset as a power
+     * failure (which would hijack it via NVIC_SystemReset and print PVD ISR
+     * noise). PVD is already disabled above, so a live PVDO read would abort
+     * anyway; this just guarantees no stale state survives. */
+    g_pvd_trigger_count = 0;
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_PVDO);
+    EXTI->PR = EXTI_PR_PR16;
+
     __disable_irq();
     NVIC_SystemReset();
 

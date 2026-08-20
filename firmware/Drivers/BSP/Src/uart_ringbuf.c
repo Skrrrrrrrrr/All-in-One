@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include "serial.h"   /* serial_get_input_mode / vSetPromptRefreshNeeded：
+                        让后台异步输出在 CLI 输入模式下先清提示符行再打印 */
 
 static uint8_t uart_rb[UART_RB_SIZE];
 static volatile uint32_t rb_head = 0;
@@ -139,7 +141,48 @@ void vUartRbPrintf(const char *fmt, ...)
     }
 
     if (n > 0) {
-        uart_rb_write((const uint8_t *)buf, (size_t)n);
+        /* 若 CLI 当前处于“用户输入模式”（正显示提示符 "> " 与已输入内容），
+         * 后台任务（echo server / lwip_test / LwIP 诊断等）经本函数输出会糊在
+         * 提示符那一行。此时：
+         *   1) 先用 \x1B[2K\r 清掉整行提示符（抹掉 "> " 及已输入内容）；
+         *   2) 打印消息；
+         *   3) 消息末尾补一个 \r\n，让提示符在下一行重新出现。
+         * 关键：上述三段必须“拼成一段、一次性 uart_rb_write”，不能用三次分开
+         * 的写——否则 CLI 重绘提示符的 ">" 会插入到“消息”和“换行”之间，
+         * 造成 ".....> [ECHO_RX]..." 这类糊行。一次性写入后，CLI 的 ">" 只会
+         * 落在整段之前（被 escape 清掉）或之后（自然在下一行），不再插进中间。
+         * 命令执行期间 xInUserInputMode 已被置为 pdFALSE，故不会误触发。 */
+        if (serial_get_input_mode() == pdTRUE) {
+            char out[200];
+            int oi = 0;
+
+            /* 1) 清整行 + 回行首 */
+            memcpy(out, "\x1B[2K\r", 5);
+            oi = 5;
+
+            /* 2) 消息本体 */
+            memcpy(out + oi, buf, (size_t)n);
+            oi += n;
+
+            /* 3) 确保消息独占一行：末尾必须是 \r\n。
+             *    - 已以 \r\n 结尾：保持；
+             *    - 以孤立 \n 结尾：改成 \r\n；
+             *    - 其它结尾：补 \r\n。 */
+            if (buf[n - 1] == '\n') {
+                if (n < 2 || buf[n - 2] != '\r') {
+                    out[oi - 1] = '\r';
+                    out[oi++] = '\n';
+                }
+            } else {
+                out[oi++] = '\r';
+                out[oi++] = '\n';
+            }
+
+            uart_rb_write((const uint8_t *)out, (size_t)oi);  /* 一次性原子写入 */
+            vSetPromptRefreshNeeded();   /* CLI 循环重绘 "> " + 已输入内容 */
+        } else {
+            uart_rb_write((const uint8_t *)buf, (size_t)n);
+        }
     }
 }
 

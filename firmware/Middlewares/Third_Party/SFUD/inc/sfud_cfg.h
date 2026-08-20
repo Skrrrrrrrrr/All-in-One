@@ -31,7 +31,16 @@
 
 #define SFUD_DEBUG_MODE
 
-#define SFUD_USING_SFDP
+/* SFDP probing DISABLED.
+ * This BSP uses a FIXED Winbond W25Q128BV (JEDEC ID 0xEF/0x40/0x18) which is
+ * already present in SFUD's static flash_chip_table (see sfud_flash_def.h).
+ * SFDP probing is therefore redundant, and right after the flash reset it
+ * intermittently returns a bad signature -> non-deterministic boot
+ * ("Check SFDP signature error" + fallback to the static table, at random).
+ * Using the static table makes sfud_init() deterministic and removes the
+ * error spam. The static entry (16MB, 256B page, 4KB erase 0x20) is identical
+ * to what SFDP would report, so flash read/erase/write behavior is unchanged. */
+// #define SFUD_USING_SFDP
 
 // #define SFUD_USING_FAST_READ
 

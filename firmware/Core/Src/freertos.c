@@ -32,6 +32,7 @@
 #include "uart_ringbuf.h"
 #include "serial.h"
 #include "lwip_test_cmds.h"
+#include "echo_srv.h"        /* vRegisterEchoSrvCommands：echo_tcp_srv/udp_srv/stop/status */
 #include <string.h>          /* strlen()：栈溢出钩子中打印任务名 */
 #include "bsp_init.h"        /* bsp_init()：BSP 各驱动模块注册初始化 */
 #include "elog.h"            /* elog_set_filter_lvl()：EasyLogger 过滤级别 */
@@ -242,6 +243,10 @@ void StartMyTask(void *argument)
     /* 注册 LwIP 网络诊断命令（ifconfig/arp/route/ping/tcp_test/
      * udp_test/lwip_test），�? CLI 任务启动前注册，命令执行�? LwIP 已初始化 */
     vRegisterLwipTestCommands();
+    /* 注册 echo server 调试命令（echo_tcp_srv/echo_udp_srv/echo_stop/echo_status）：
+     * 设备作为 TCP/UDP server 监听端口，PC 用 NetAssist 作为 client 发送指令，
+     * 设备把收到的数据原样回传（echo），用于交互式链路调试。 */
+    vRegisterEchoSrvCommands();
     /* CLI task priority lowered below myTask (osPriorityLow): it only
      * polls the UART, so a PVD event handled by myTask must never wait
      * for the CLI to yield. */
